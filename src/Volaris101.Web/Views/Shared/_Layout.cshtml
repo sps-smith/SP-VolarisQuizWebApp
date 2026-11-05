@@ -1,0 +1,113 @@
+@using Volaris101.Application.Interfaces
+@inject ICurrentUserContext UserCtx
+@{
+    var lang = UserCtx.PreferredLanguage;
+    var langLabel = lang switch {
+        "fr" => "FR",
+        "es" => "ES",
+        "pt" => "PT",
+        "de" => "DE",
+        _    => "EN"
+    };
+    var returnUrl = Context.Request.Path + Context.Request.QueryString;
+}
+<!DOCTYPE html>
+<html lang="@lang">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>@(ViewData["Title"] != null ? $"{ViewData["Title"]} — " : "")Volaris 101</title>
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true">
+    <link rel="icon" href="~/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="~/favicon-32x32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="~/apple-touch-icon.png">
+    <link rel="manifest" href="~/site.webmanifest">
+    <meta name="theme-color" content="#C41230">
+    <link rel="mask-icon" href="~/safari-pinned-tab.svg" color="#C41230">
+</head>
+<body class="@(UserCtx.IsImpersonating ? "has-impersonation-banner" : "")">
+
+<div hidden>
+    @Html.AntiForgeryToken()
+</div>
+
+@if (UserCtx.IsImpersonating)
+{
+<div class="impersonation-banner" role="status" aria-live="polite">
+    <div class="impersonation-banner__text">
+        <strong>Impersonation mode</strong>
+        <span>You are acting as @UserCtx.FullName.</span>
+    </div>
+    <div class="impersonation-banner__actions">
+        <span class="impersonation-banner__chip">Signed in as @UserCtx.ImpersonatorFullName</span>
+        <button type="button" class="impersonation-banner__button" onclick="stopImpersonation()">Stop impersonating</button>
+    </div>
+</div>
+}
+
+<div class="bar">
+    <div class="logo">
+        <img class="lmark-img" src="~/training-icon.png" alt="Volaris 101 app icon">
+        <span class="ltitle">Volaris 101</span>
+    </div>
+    <div class="ntabs">
+        <a class="ntab @(ViewData["ActiveTab"]?.ToString() == "learner" ? "on" : "")"
+           href="/">My Learning</a>
+
+        @if (UserCtx.IsOrgAdmin)
+        {
+            <a class="ntab @(ViewData["ActiveTab"]?.ToString() == "reporting" ? "on" : "")"
+               href="/reporting">Reporting</a>
+        }
+
+        @if (UserCtx.IsGlobalAdmin)
+        {
+            <a class="ntab @(ViewData["ActiveTab"]?.ToString() == "admin" ? "on" : "")"
+               href="/admin">Admin</a>
+        }
+    </div>
+    <div class="upill">
+        @* ── Language picker — only shown on My Learning tab ────────── *@
+        @if (ViewData["ActiveTab"]?.ToString() == "learner")
+        {
+        <div class="lang-picker" id="lang-picker">
+            <button class="lang-btn" onclick="toggleLangMenu(event)" type="button">
+                🌐 @langLabel <span class="lang-caret">▾</span>
+            </button>
+            <div class="lang-menu" id="lang-menu" style="display:none">
+                @foreach (var (code, label) in new[] { ("en","English"), ("fr","Français"), ("es","Español"), ("pt","Português"), ("de","Deutsch") })
+                {
+                    <form method="post" action="/language/set">
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="lang" value="@code">
+                        <input type="hidden" name="returnUrl" value="@returnUrl">
+                        <button type="submit" class="lang-opt @(lang == code ? "lang-active" : "")">
+                            @label
+                        </button>
+                    </form>
+                }
+            </div>
+        </div>
+        }
+
+        <div class="av">@UserCtx.FullName.Split(' ').Select(w => w.FirstOrDefault()).Take(2).Select(c => c.ToString()).Aggregate("", (a, b) => a + b)</div>
+        <span>@UserCtx.FullName &nbsp;·&nbsp; Okta SSO</span>
+        <a href="/auth/logout" style="font-size:12px;color:#aaa;margin-left:8px;text-decoration:none">Sign out</a>
+    </div>
+</div>
+
+<div class="main">
+    @RenderBody()
+</div>
+
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:200;align-items:flex-start;justify-content:center;padding-top:40px;overflow-y:auto">
+    <div id="modal-box" style="background:#fff;border-radius:14px;width:680px;max-width:95vw;padding:28px;position:relative;margin-bottom:40px">
+        <button onclick="closeModal()" style="position:absolute;top:16px;right:16px;background:none;border:none;font-size:20px;cursor:pointer;color:#888;line-height:1">×</button>
+        <div id="modal-content"></div>
+    </div>
+</div>
+
+<script src="~/js/site.js" asp-append-version="true"></script>
+@await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

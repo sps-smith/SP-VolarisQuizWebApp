@@ -1,0 +1,15 @@
+@{
+    ViewData["Title"] = "Access denied";
+    var reason = ViewData["Reason"] as string;
+}
+<div style="text-align:center;padding:60px 24px">
+    <h2 style="font-size:20px;font-weight:700;margin-bottom:8px">Access denied</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:24px">You don't have permission to view this page.</p>
+    @if (!string.IsNullOrWhiteSpace(reason))
+    {
+        <div style="max-width:720px;margin:0 auto 24px;padding:12px 14px;border:1px solid #e5d6b0;border-radius:10px;background:#fff8e8;color:#6a4b00;font-size:12px;text-align:left;word-break:break-word">
+            <strong>Sign-in detail:</strong> @reason
+        </div>
+    }
+    <a class="bp" href="/">Back to dashboard</a>
+</div>

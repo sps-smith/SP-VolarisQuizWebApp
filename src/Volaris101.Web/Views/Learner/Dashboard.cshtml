@@ -1,0 +1,72 @@
+@model Volaris101.Application.Dtos.LearnerDashboardDto
+@inject IConfiguration Configuration
+@{
+    ViewData["Title"] = "My Learning";
+    ViewData["ActiveTab"] = "learner";
+    var portalUrl = Configuration["Volaris101PortalUrl"];
+}
+
+@* Completion banner *@
+@if (Model.IsFullyCompleted)
+{
+    var completedAtText = Model.CompletedAt?.ToString("d MMMM yyyy") ?? "";
+    <div class="cban on">
+        <div class="cban-t">Volaris 101 complete</div>
+        <div class="cban-b">
+            Congratulations, @Model.FirstName - you have completed Volaris 101 on @completedAtText. Your certificate will be issued through Workday. No action is required on your part.
+        </div>
+    </div>
+}
+
+@* Progress banner *@
+<div class="pban">
+    <h2>Welcome back, @Model.FirstName</h2>
+    <p>@Model.PassedCount of @Model.TotalCount modules completed</p>
+    <div class="ptk">
+        <div class="pfil" style="width:@(Model.ProgressPercent)%"></div>
+    </div>
+    @if (!string.IsNullOrWhiteSpace(portalUrl))
+    {
+        <p class="portal-note">
+            Before you start a quiz, make sure you have completed the related module in the
+            <a href="@portalUrl" target="_blank" rel="noopener noreferrer">Volaris 101 portal</a>.
+        </p>
+    }
+</div>
+
+@* Module grid *@
+<div class="mgrid">
+    @foreach (var mod in Model.Modules)
+    {
+        <div class="mcard">
+            <div class="mch">
+                <span class="mnum">Module @mod.DisplayOrder</span>
+                @if (!mod.IsPublished)
+                {
+                    <span class="draft-pill">Draft</span>
+                }
+                <span class="mst @(mod.Status == "pass" ? "sp" : mod.Status == "fail" ? "sf" : "s0")">
+                    @mod.StatusLabel
+                </span>
+            </div>
+            <div class="mn2">@mod.Title</div>
+            <div class="ms2">
+                @if (mod.BestScore.HasValue)
+                {
+                    @:Best score: @mod.BestScore% - @mod.AttemptCount attempt@(mod.AttemptCount != 1 ? "s" : "")
+                }
+                else if (mod.Status == "ip")
+                {
+                    @:Started, not submitted
+                }
+                else
+                {
+                    @:Not attempted
+                }
+            </div>
+            <a class="mcta @(mod.Status == "ns" ? "pr" : "")" href="/learner/quiz/start/@mod.QuizId">
+                @mod.CtaLabel
+            </a>
+        </div>
+    }
+</div>

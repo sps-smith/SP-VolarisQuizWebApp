@@ -1,0 +1,231 @@
+@model Volaris101.Application.Dtos.StartQuizResponseDto
+@{
+    ViewData["Title"] = Model.ModuleTitle;
+    ViewData["ActiveTab"] = "learner";
+}
+
+<div id="quiz-root">
+    @Html.AntiForgeryToken()
+    <div class="qhd">
+        <a class="bbk" href="/">&larr; Back to dashboard</a>
+        <div class="qmeta">
+            <span id="module-label">Module @Model.DisplayOrder: @Model.ModuleTitle</span>
+            &nbsp;&middot;&nbsp;
+            <strong id="question-counter">Question 1 of @Model.Questions.Count</strong>
+        </div>
+    </div>
+
+    <div class="quiz-instructions" id="quiz-instructions" hidden>
+        <div class="quiz-instructions-title">Instructions</div>
+        <ul class="quiz-instructions-list">
+            <li>Quiz must be finished in one sitting. Upon exit, the quiz will restart from the beginning.</li>
+            <li>Questions displayed per page: 1</li>
+            <li>Answers may be changed before submitting.</li>
+            <li>All questions must be answered to complete the quiz.</li>
+            <li>Pass Rate: 50%</li>
+        </ul>
+    </div>
+
+    <div id="qb"></div>
+
+    <div class="qft">
+        <div class="mn3" id="mn3"></div>
+        <div class="qnav">
+            <button class="bp" id="bpr" type="button" disabled onclick="goToPreviousQ()">&larr; Previous</button>
+            <button class="bp" id="bnx" type="button" disabled onclick="advanceQ()">Next &rarr;</button>
+        </div>
+    </div>
+</div>
+
+<div id="results-root" style="display:none">
+    <div class="rshd">
+        <div class="rtl" id="rtl"></div>
+        <div class="rsc" id="rsc"></div>
+        <div class="rsb" id="rsb"></div>
+        <div class="ract">
+            <a class="bs" id="bdash" href="/">Back to dashboard</a>
+            <button class="bp" id="brt" type="button" style="display:none">Try again</button>
+        </div>
+    </div>
+    <div id="rrev"></div>
+</div>
+
+@section Scripts {
+<script>
+const ATTEMPT_ID = "@Model.AttemptId";
+const QUIZ_ID = "@Model.QuizId";
+const QUESTIONS = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Questions, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+const TOKEN_VALUE = document.querySelector('input[name="__RequestVerificationToken"]')?.value ?? '';
+
+let cur = 0;
+let selections = [];
+
+function renderQ() {
+    const q = QUESTIONS[cur];
+    selections[cur] = selections[cur] || { questionId: q.questionId, selectedOptionIds: [] };
+    document.getElementById('question-counter').textContent = `Question ${cur + 1} of ${QUESTIONS.length}`;
+    document.getElementById('mn3').textContent = q.isMultiSelect ? 'Select all that apply' : '';
+    document.getElementById('quiz-instructions').hidden = cur !== 0;
+
+    const prevBtn = document.getElementById('bpr');
+    const nextBtn = document.getElementById('bnx');
+    prevBtn.disabled = cur === 0;
+    nextBtn.disabled = selections[cur].selectedOptionIds.length === 0;
+    nextBtn.textContent = cur === QUESTIONS.length - 1 ? 'Finish quiz →' : 'Next →';
+
+    document.getElementById('qb').innerHTML = `
+        <div class="qcard">
+            <div class="qn">Question ${cur + 1}</div>
+            <div class="qt">${escHtml(q.questionText)}</div>
+            <div class="opts" id="opts">
+                ${q.options.map(o => `
+                    <div class="opt ${selections[cur].selectedOptionIds.includes(o.optionId) ? 'sel' : ''}"
+                         id="opt-${o.optionId}" onclick="toggle('${o.optionId}', ${q.isMultiSelect})">
+                        <div class="ol">${o.optionLetter}</div>
+                        <div>${escHtml(o.optionText)}</div>
+                    </div>`).join('')}
+            </div>
+        </div>`;
+}
+
+function toggle(optionId, isMulti) {
+    const sel = selections[cur].selectedOptionIds;
+    if (!isMulti) {
+        selections[cur].selectedOptionIds = [optionId];
+        document.querySelectorAll('.opt').forEach(el => el.classList.remove('sel'));
+        document.getElementById('opt-' + optionId).classList.add('sel');
+    } else {
+        const idx = sel.indexOf(optionId);
+        if (idx > -1) {
+            sel.splice(idx, 1);
+        } else {
+            sel.push(optionId);
+        }
+        document.getElementById('opt-' + optionId).classList.toggle('sel', sel.includes(optionId));
+    }
+    document.getElementById('bnx').disabled = selections[cur].selectedOptionIds.length === 0;
+}
+
+function goToPreviousQ() {
+    if (cur === 0) return;
+    cur--;
+    renderQ();
+}
+
+function advanceQ() {
+    if (cur < QUESTIONS.length - 1) {
+        cur++;
+        renderQ();
+        return;
+    }
+
+    submitQuiz();
+}
+
+async function submitQuiz() {
+    document.getElementById('bpr').disabled = true;
+    document.getElementById('bnx').disabled = true;
+    document.getElementById('bnx').textContent = 'Submitting...';
+
+    const payload = {
+        attemptId: ATTEMPT_ID,
+        answers: selections.map(selection => {
+            const question = QUESTIONS.find(q => q.questionId === selection.questionId);
+            const selectedOptionDisplayOrders = selection.selectedOptionIds
+                .map(optionId => question?.options.find(o => o.optionId === optionId)?.displayOrder)
+                .filter(order => Number.isInteger(order));
+
+            return { ...selection, selectedOptionDisplayOrders };
+        })
+    };
+
+    const resp = await fetch('/learner/quiz/submit', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'RequestVerificationToken': TOKEN_VALUE
+        },
+        body: JSON.stringify(payload)
+    });
+
+    if (!resp.ok) {
+        alert(await responseErrorMessage(resp, 'Something went wrong. Please try again.'));
+        document.getElementById('bpr').disabled = cur === 0;
+        document.getElementById('bnx').disabled = false;
+        document.getElementById('bnx').textContent = cur === QUESTIONS.length - 1 ? 'Finish quiz →' : 'Next →';
+        return;
+    }
+
+    const result = await resp.json();
+    showResults(result);
+}
+
+function showResults(r) {
+    document.getElementById('quiz-root').style.display = 'none';
+    document.getElementById('results-root').style.display = 'block';
+
+    document.getElementById('rtl').textContent = r.passed ? 'You passed!' : 'Not quite - give it another try';
+    document.getElementById('rsc').textContent = r.scorePercent + '%';
+    document.getElementById('rsc').className = 'rsc ' + (r.passed ? 'pass' : 'fail');
+    document.getElementById('rsb').textContent =
+        `${r.correctCount} of ${r.totalCount} correct · ${r.passed ? 'Module complete - well done' : '50% required to pass - no limit on retakes'}`;
+    document.getElementById('brt').style.display = r.passed ? 'none' : 'inline-block';
+    document.getElementById('brt').onclick = () => {
+        window.location.href = `/learner/quiz/start/${encodeURIComponent(QUIZ_ID)}`;
+    };
+    document.getElementById('bdash').href = '/?refresh=' + encodeURIComponent(String(Date.now()));
+
+    const wrongs = r.review.filter(i => !i.isCorrect);
+    const rights = r.review.filter(i => i.isCorrect);
+    let html = '';
+
+    if (wrongs.length > 0) {
+        html += `<div class="rseclbl">Review - ${wrongs.length} incorrect answer${wrongs.length > 1 ? 's' : ''}</div>`;
+        wrongs.forEach(item => {
+            html += `<div class="rcard inc"><div class="rqt">Q${item.position}. ${escHtml(item.questionText)}</div><div class="ropts">`;
+            item.options.forEach(o => {
+                const cls = (o.isCorrect ? 'ca' : '') + (o.wasSelected && !o.isCorrect ? ' ws' : '');
+                html += `<div class="ropt ${cls}"><div class="ol2">${o.letter}</div><div>${escHtml(o.optionText)}</div></div>`;
+            });
+            const correctLetters = item.options.filter(o => o.isCorrect).map(o => o.letter).join(', ');
+            html += `</div><div class="expbox"><strong>Correct answer${item.options.filter(o => o.isCorrect).length > 1 ? 's' : ''} (${correctLetters}):</strong></div></div>`;
+        });
+    }
+
+    if (rights.length > 0) {
+        html += `<div class="rseclbl">Correct - ${rights.length} answer${rights.length > 1 ? 's' : ''}</div>`;
+        rights.forEach(item => {
+            html += `<div class="rcard"><div class="ctick"><strong>Q${item.position}.</strong> &nbsp;${escHtml(item.questionText)}</div></div>`;
+        });
+    }
+
+    document.getElementById('rrev').innerHTML = html;
+}
+
+function escHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+async function responseErrorMessage(resp, fallback) {
+    const text = await resp.text();
+    if (!text) return `${fallback} (HTTP ${resp.status}${resp.statusText ? ` ${resp.statusText}` : ''})`;
+
+    try {
+        const json = JSON.parse(text);
+        if (json.error) return json.error;
+        const messages = Object.values(json)
+            .flatMap(value => Array.isArray(value) ? value : [value])
+            .filter(Boolean);
+        return messages.length ? messages.join('\n') : fallback;
+    } catch {
+        return text;
+    }
+}
+
+renderQ();
+</script>
+}

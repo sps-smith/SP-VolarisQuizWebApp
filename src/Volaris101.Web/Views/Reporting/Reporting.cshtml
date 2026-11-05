@@ -1,0 +1,1720 @@
+﻿@model Volaris101.Web.Controllers.ReportingPageModel
+@using Microsoft.AspNetCore.Html
+@using Volaris101.Application.Interfaces
+@using Volaris101.Domain.Entities
+@using System.Text.Json
+@inject ICurrentUserContext UserCtx
+@{
+    ViewData["Title"] = "Reporting";
+    ViewData["ActiveTab"] = "reporting";
+
+    var isOverviewTab = Model.ActiveTab == "overview";
+    var tabOverview = Model.ActiveTab == "overview" ? "on" : "";
+    var tabUsers    = Model.ActiveTab == "users"    ? "on" : "";
+    var tabExport   = Model.ActiveTab == "export"   ? "on" : "";
+    var tabDashboard = Model.ActiveTab == "dashboard" ? "on" : "";
+    var isDashboardTab = Model.ActiveTab == "dashboard";
+
+    // Module dropdown - built from quizzes in the DB
+    var moduleOpts = new System.Text.StringBuilder();
+    moduleOpts.Append("<select class=\"fi\" id=\"fl-module\" onchange=\"applyFilters(); updateFilterControlStates()\">");
+    moduleOpts.Append("<option value=\"\">All modules</option>");
+    var quizList = Model.Quizzes ?? new List<Quiz>();
+    var moduleCount = Model.Filter.ModuleOrder.HasValue ? 1 : quizList.Count;
+    var moduleNoun = moduleCount == 1 ? "module" : "modules";
+    foreach (var quiz in quizList.OrderBy(q => q.DisplayOrder))
+    {
+        var label = $"M{quiz.DisplayOrder}: {quiz.GetTitle("en")}";
+        var sel   = Model.Filter.ModuleOrder == quiz.DisplayOrder ? " selected" : "";
+        moduleOpts.Append($"<option value=\"{quiz.DisplayOrder}\"{sel}>{System.Web.HttpUtility.HtmlEncode(label)}</option>");
+    }
+    moduleOpts.Append("</select>");
+    var moduleHtml = new HtmlString(moduleOpts.ToString());
+
+    // Pre-format existing date values for the date inputs (yyyy-MM-dd)
+    var fromVal = Model.Filter.FromDate.HasValue
+        ? Model.Filter.FromDate.Value.ToString("yyyy-MM-dd") : "";
+    var toVal   = Model.Filter.ToDate.HasValue
+        ? Model.Filter.ToDate.Value.ToString("yyyy-MM-dd")   : "";
+    var hasDateRange = !string.IsNullOrEmpty(fromVal) && !string.IsNullOrEmpty(toVal);
+    var hasExportPreviewRows = Model.ExportPreview is { Count: > 0 };
+    var selectedStatuses = (Model.Filter.Status ?? Array.Empty<string>())
+        .Where(s => !string.IsNullOrWhiteSpace(s))
+        .Select(s => s.Trim())
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+    var selectedStatusJson = JsonSerializer.Serialize(selectedStatuses);
+    var selectedStatusLabel = selectedStatuses.Count == 0 || selectedStatuses.Count == 3
+        ? "All statuses"
+        : string.Join(", ", selectedStatuses);
+
+    // Max date = today
+    var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
+
+    // Company filter setup
+    var allGroups        = Model.AvailableCompanies ?? new List<Volaris101.Application.Dtos.CompanyGroupDto>();
+    var allCompanies     = allGroups
+        .SelectMany(g => g.Companies)
+        .GroupBy(c => c.OrganizationId)
+        .Select(g => g.First())
+        .ToList();
+    var totalCompanies   = allCompanies.Count;
+    var showCompanyFilter = totalCompanies > 1;
+    var selectedCompanyIds = (Model.Filter.Companies ?? Array.Empty<int>())
+        .Where(id => id > 0)
+        .Distinct()
+        .ToList();
+    var companyLabelLookup = allCompanies.ToDictionary(
+        c => c.OrganizationId,
+        c => c.CompanyName);
+    var selectedCompanyLabels = selectedCompanyIds
+        .Select(id => companyLabelLookup.TryGetValue(id, out var label) ? label : $"Organization {id}")
+        .ToList();
+    var groupsJson       = JsonSerializer.Serialize(allGroups.Select(g => new
+    {
+        portfolioName = g.PortfolioName,
+        companies = g.Companies.Select(c => new
+        {
+            organizationId = c.OrganizationId,
+            companyName = c.CompanyName,
+            displayName = c.CompanyName,
+            isPortfolio = c.IsPortfolio
+        })
+    }));
+    var organizationChildrenJson = Model.OrganizationChildrenJson ?? "{}";
+    var portfolioOrganizationIdsJson = Model.PortfolioOrganizationIdsJson ?? "[]";
+    var selectedJson     = JsonSerializer.Serialize(selectedCompanyIds);
+    var hasSidebar       = allGroups.Count > 1;
+
+    var allDomains = (Model.Domains ?? Array.Empty<string>())
+        .Where(d => !string.IsNullOrWhiteSpace(d))
+        .Select(d => d.Trim())
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(d => d)
+        .ToList();
+    var showDomainFilter = allDomains.Count > 1;
+    var selectedDomains = (Model.Filter.Domains is { Length: > 0 }
+            ? Model.Filter.Domains
+            : !string.IsNullOrWhiteSpace(Model.Filter.Domain)
+                ? new[] { Model.Filter.Domain! }
+                : Array.Empty<string>())
+        .Select(d => d.Trim().TrimStart('@'))
+        .Where(d => !string.IsNullOrWhiteSpace(d))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(d => d)
+        .ToList();
+    var domainInputValue = !string.IsNullOrWhiteSpace(Model.Filter.Domain)
+        ? Model.Filter.Domain!
+        : selectedDomains.Count == 1
+            ? "@" + selectedDomains[0]
+            : "";
+    var domainsJson     = JsonSerializer.Serialize(allDomains);
+    var selectedDomainsJson = JsonSerializer.Serialize(selectedDomains);
+    var hasExportFilterSelection =
+        !string.IsNullOrWhiteSpace(Model.Filter.SearchTerm) ||
+        !string.IsNullOrWhiteSpace(Model.Filter.Domain) ||
+        selectedDomains.Count > 0 ||
+        Model.Filter.ModuleOrder.HasValue ||
+        Model.Filter.LastActiveDays.HasValue ||
+        selectedCompanyIds.Count > 0 ||
+        !string.IsNullOrWhiteSpace(Model.Filter.Portfolio) ||
+        hasDateRange ||
+        selectedStatuses.Count > 0 ||
+        Model.Filter.IncludeLeavers;
+
+    // Current applied filter, serialized for the export POST (sent as JSON body)
+    var exportFilterJson = JsonSerializer.Serialize(new
+    {
+        searchTerm     = Model.AppliedFilter.SearchTerm,
+        domain         = Model.AppliedFilter.Domain,
+        domains        = selectedDomains,
+        moduleOrder    = Model.AppliedFilter.ModuleOrder,
+        lastActiveDays = Model.AppliedFilter.LastActiveDays,
+        companies      = Model.AppliedFilter.Companies,
+        portfolio      = Model.AppliedFilter.Portfolio,
+        fromDate       = Model.AppliedFilter.FromDate,
+        toDate         = Model.AppliedFilter.ToDate,
+        refreshToken   = Model.AppliedFilter.RefreshToken,
+        status         = Model.AppliedFilter.Status,
+        includeLeavers = Model.AppliedFilter.IncludeLeavers
+    });
+
+    // Carry the current filter query string across the tab links so filters persist
+    // between Overview / User Activity / Reports (empty => no trailing '?')
+    var tabQs = Context.Request.QueryString.Value;
+    if (string.IsNullOrEmpty(tabQs) || tabQs == "?") { tabQs = ""; }
+}
+
+<div class="atabs">
+    <a class="atab @tabOverview" href="/reporting@(tabQs)">Overview</a>
+    <a class="atab @tabUsers"    href="/reporting/users@(tabQs)">User Activity</a>
+    <a class="atab @tabExport"   href="/reporting/export@(tabQs)">Reports</a>
+    @if (UserCtx.IsGlobalAdmin)
+    {
+        <a class="atab @tabDashboard" href="/reporting/dashboard">Dashboard</a>
+    }
+    @if (Model.ShowHowToButton)
+    {
+        <button type="button" class="report-howto-btn" onclick="openHowToGuide()">How To</button>
+    }
+</div>
+
+@* Filter bar *@
+@{
+    // Company column gets extra width so "Filter by company" fits on one line;
+    // the Clear-dates column sizes to its (reduced) button content.
+    var fbarCols = isOverviewTab
+        ? (showCompanyFilter ? "170px 230px 110px 170px minmax(260px, 1fr)" : "170px 230px 110px minmax(260px, 1fr)")
+        : (showCompanyFilter ? "300px 170px 230px 110px 170px" : "300px 170px 230px 110px");
+}
+@if (!isDashboardTab)
+{
+<div class="fbar" style="grid-template-columns:@fbarCols;">
+    @if (!isOverviewTab)
+    {
+        <div class="fg">
+            <label class="fl2">Learner</label>
+            <div class="clearable-input">
+            <input class="fi" id="fl-search" type="text" placeholder="Name or email..."
+                   value="@Model.Filter.SearchTerm" oninput="toggleSearchClear(); applyFilters()">
+                <button class="clear-input-btn" id="fl-search-clear" onclick="clearLearnerFilter()" type="button"
+                        aria-label="Clear learner filter" title="Clear learner filter">x</button>
+            </div>
+        </div>
+    }
+        <div class="fg">
+            <label class="fl2">Domain</label>
+            <div class="domain-filter-wrap">
+                <div class="clearable-input">
+                    <input class="fi" id="fl-domain" type="text" placeholder="example.com"
+                           value="@domainInputValue"
+                           autocomplete="off"
+                           aria-autocomplete="list"
+                           aria-expanded="false"
+                           aria-controls="df-dropdown"
+                           oninput="toggleDomainClear(); validateDomain(); if (typeof dfAllowAutoOpen !== 'undefined') dfAllowAutoOpen = true; if (typeof dfRefresh === 'function') dfRefresh();"
+                           onfocus="if (typeof dfRefresh === 'function') dfRefresh();"
+                           onkeydown="if (typeof dfHandleKeydown === 'function') dfHandleKeydown(event)">
+                    <button class="clear-input-btn" id="fl-domain-clear" onclick="clearDomainFilter()" type="button"
+                            aria-label="Clear domain filter" title="Clear domain filter">x</button>
+                </div>
+                @if (showDomainFilter)
+                {
+                    <div class="df-dropdown" id="df-dropdown" hidden>
+                        <div class="df-dropdown-hd">
+                            <span id="df-dropdown-title">Matching domains</span>
+                            <span class="df-dropdown-count" id="df-dropdown-count"></span>
+                        </div>
+                        <div class="df-dropdown-list" id="df-dropdown-list"></div>
+                    </div>
+                    <div class="cf-chips" id="df-chips"></div>
+                }
+                <span class="date-err" id="err-domain"></span>
+            </div>
+        </div>
+        <div class="fg">
+            <label class="fl2">Module</label>
+            @moduleHtml
+        </div>
+        <div class="fg status-filter-wrap">
+            <label class="fl2">Status</label>
+            <button type="button" class="cf-trigger" id="sf-trigger" onclick="sfToggleDropdown()" aria-haspopup="dialog" aria-expanded="false">
+                <span id="sf-trigger-label">@selectedStatusLabel</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <div class="df-dropdown sf-dropdown" id="sf-dropdown" hidden onclick="event.stopPropagation()">
+                <div class="df-dropdown-hd">
+                    <span>Filter by status</span>
+                    <span class="df-dropdown-count" id="sf-count"></span>
+                </div>
+                <div class="df-dropdown-list" id="sf-list">
+                    <label class="sf-option"><input type="checkbox" value="Completed" data-status-option onchange="sfSyncFromCheckboxes()"><span>Completed</span></label>
+                    <label class="sf-option"><input type="checkbox" value="In Progress" data-status-option onchange="sfSyncFromCheckboxes()"><span>In Progress</span></label>
+                    <label class="sf-option"><input type="checkbox" value="Not Started" data-status-option onchange="sfSyncFromCheckboxes()"><span>Not Started</span></label>
+                </div>
+                <div class="sf-footer">
+                    <button type="button" class="sf-clear" onclick="sfClear()">Clear</button>
+                </div>
+            </div>
+        </div>
+    @if (showCompanyFilter)
+    {
+        <div class="fg" id="fg-company">
+            <label class="fl2">Organization</label>
+            <button type="button" class="cf-trigger" id="cf-trigger" onclick="cfOpenModal()" aria-haspopup="dialog" aria-label="Filter by organization">
+                <span>Filter by organization</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+        </div>
+    }
+    @if (isOverviewTab)
+    {
+        <div class="overview-date-filters" aria-label="Date filters">
+            <div class="date-field-wrap overview-date-field">
+                <label class="fl2 date-label" for="fl-from">From Date</label>
+                <input class="fi date-input overview-date-input" id="fl-from" type="date"
+                       value="@fromVal" max="@today"
+                       onchange="validateAndApply()"
+                       oninput="validateAndApply()">
+                <span class="date-err" id="err-from"></span>
+            </div>
+            <div class="date-field-wrap overview-date-field overview-date-field--to">
+                <label class="fl2 date-label" for="fl-to">To Date</label>
+                <input class="fi date-input overview-date-input" id="fl-to" type="date"
+                       value="@toVal" max="@today"
+                       onchange="validateAndApply()"
+                       oninput="validateAndApply()">
+                <span class="date-err" id="err-to"></span>
+                <button class="date-clear-btn date-clear-btn-below" id="date-clear-btn" onclick="clearDates()" type="button"
+                        hidden="@(string.IsNullOrEmpty(fromVal) && string.IsNullOrEmpty(toVal) ? "hidden" : null)">Clear dates</button>
+            </div>
+        </div>
+    }
+    else
+    {
+        <table class="date-filter-table" aria-label="Date filters">
+            <tbody>
+                <tr>
+                    <td class="date-field">
+                        <div class="date-field-wrap">
+                            <label class="fl2 date-label" for="fl-from">From Date</label>
+                            <input class="fi date-input" id="fl-from" type="date"
+                                   value="@fromVal" max="@today"
+                                   onchange="validateAndApply()"
+                                   oninput="validateAndApply()">
+                            <span class="date-err" id="err-from"></span>
+                        </div>
+                    </td>
+                    <td class="date-field">
+                        <div class="date-field-wrap">
+                            <label class="fl2 date-label" for="fl-to">To Date</label>
+                            <input class="fi date-input" id="fl-to" type="date"
+                                   value="@toVal" max="@today"
+                                   onchange="validateAndApply()"
+                                   oninput="validateAndApply()">
+                            <span class="date-err" id="err-to"></span>
+                        </div>
+                    </td>
+                    <td class="date-actions">
+                        <div class="date-actions-inner">
+                            <button class="date-clear-btn" id="date-clear-btn" onclick="clearDates()" type="button"
+                                    hidden="@(string.IsNullOrEmpty(fromVal) && string.IsNullOrEmpty(toVal) ? "hidden" : null)">Clear dates</button>
+                        </div>
+                    </td>
+                    <td class="include-leavers-cell">
+                        <label class="include-leavers-toggle" for="fl-include-leavers">
+                            <span class="fl2">Include Leavers</span>
+                            <span class="toggle-switch">
+                            <input id="fl-include-leavers" type="checkbox" role="switch" aria-label="Include Leavers"
+                                   @(Model.Filter.IncludeLeavers ? "checked" : null)
+                                   onchange="applyFilters(0)">
+                                <span class="toggle-slider" aria-hidden="true"></span>
+                            </span>
+                        </label>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    }
+    @if (isOverviewTab)
+    {
+        <div class="include-leavers-row">
+            <label class="include-leavers-toggle" for="fl-include-leavers">
+                <span class="fl2">Include Leavers</span>
+                <span class="toggle-switch">
+                    <input id="fl-include-leavers" type="checkbox" role="switch" aria-label="Include Leavers"
+                           @(Model.Filter.IncludeLeavers ? "checked" : null)
+                           onchange="applyFilters(0)">
+                    <span class="toggle-slider" aria-hidden="true"></span>
+                </span>
+            </label>
+        </div>
+    }
+    <div class="filter-loading" id="filter-loading" hidden>
+        <div class="filter-spinner"></div>
+        <span class="filter-loading-text">Updating results...</span>
+    </div>
+</div>
+}
+
+@* Company filter modal - only rendered when multi-company filter applies *@
+@if (!isDashboardTab && showCompanyFilter)
+{
+    <div id="cf-overlay" class="cf-overlay" role="dialog" aria-modal="true" aria-label="Select organizations" hidden>
+        <div class="cf-modal" onclick="event.stopPropagation()">
+            <div class="cf-modal-hd">
+                <span class="cf-modal-title">Select organizations</span>
+                <div class="cf-modal-search">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                    <input type="text" id="cf-search" placeholder="Search organizations..." oninput="cfOnSearch(this.value)" autocomplete="off">
+                    <button type="button" class="clear-input-btn" id="cf-search-clear" onclick="cfClearSearch()" aria-label="Clear organization search" title="Clear organization search">x</button>
+                </div>
+                <button type="button" class="cf-modal-close" onclick="cfCloseModal(false)" aria-label="Close">x</button>
+            </div>
+            <div class="cf-select-all" onclick="cfToggleAll()">
+                <input type="checkbox" id="cf-chk-all" onclick="event.stopPropagation();cfToggleAll()">
+                <span id="cf-sa-label">Select all organizations</span>
+                <span class="cf-sa-hint" id="cf-sa-hint"></span>
+            </div>
+            <div class="cf-body">
+                @if (hasSidebar)
+                {
+                    <div class="cf-sidebar" id="cf-sidebar">
+                        <button type="button" class="cf-sb-all cf-sb-active" id="cf-sb-all" onclick="cfSetActivePf(null)">All portfolios</button>
+                        @foreach (var grp in allGroups)
+                        {
+                            <button type="button" class="cf-sb-item" data-pf="@grp.PortfolioName" onclick="cfSetActivePf(this.dataset.pf)">
+                                @grp.PortfolioName
+                                <span class="cf-sb-badge" data-pf-badge="@grp.PortfolioName" hidden></span>
+                            </button>
+                        }
+                    </div>
+                }
+                <div class="cf-pane" id="cf-pane">
+                    @foreach (var grp in allGroups)
+                    {
+                        <div class="cf-pf-section" data-section="@grp.PortfolioName">
+                            <div class="cf-pf-hd">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
+                                <span>@grp.PortfolioName</span>
+                                <span class="cf-pf-count" data-pf-count="@grp.PortfolioName">0 / @grp.Companies.Count selected</span>
+                                <button type="button" class="cf-pf-selall" data-pf-selall="@grp.PortfolioName" onclick="cfTogglePortfolio(this.dataset.pfSelall)">Select all</button>
+                            </div>
+                            <div class="cf-grid">
+                                @foreach (var co in grp.Companies)
+                                {
+                                    <div class="cf-co-row"
+                                         data-company-id="@co.OrganizationId"
+                                         data-company-name="@co.CompanyName"
+                                         data-company-display="@co.CompanyName"
+                                         data-portfolio="@grp.PortfolioName"
+                                         onclick="cfToggleCompany(this.dataset.companyId)">
+                                        <input type="checkbox"
+                                               data-co-chk="@co.OrganizationId"
+                                               onclick="event.stopPropagation();cfToggleCompany(this.closest('.cf-co-row').dataset.companyId)">
+                                        <span class="cf-co-name">@co.CompanyName</span>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                    <div class="cf-empty" id="cf-empty" hidden>No organizations match your search.</div>
+                </div>
+            </div>
+            <div class="cf-modal-ft">
+                <span class="cf-ft-count" id="cf-ft-count">No filter - showing all organizations</span>
+                <div style="display:flex;gap:8px">
+                    <button type="button" class="cf-btn-clear" onclick="cfClearPending()">Clear</button>
+                    <button type="button" class="cf-btn-apply" onclick="cfCloseModal(true)">Apply filter</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* Active company filter indicator - shown below the filter controls *@
+@if (!isDashboardTab && showCompanyFilter && selectedCompanyIds.Any())
+{
+    <div class="cf-applied" id="cf-applied">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></svg>
+        <span>
+            @if (selectedCompanyIds.Count == totalCompanies)
+            {
+                <text>All organizations selected</text>
+            }
+            else
+            {
+                <text>Filtered by <strong>@selectedCompanyIds.Count</strong> of @totalCompanies organizations:</text>
+                <span class="cf-applied-list">@string.Join(", ", selectedCompanyLabels)</span>
+            }
+        </span>
+        <button type="button" class="cf-applied-clear" onclick="applyFilters(0, [])">Clear organization filter</button>
+    </div>
+}
+
+@if (Model.ActiveTab == "dashboard" && Model.Dashboard != null)
+{
+    var dashboard = Model.Dashboard;
+    var lastRefreshed = dashboard.LastRefreshedAt?.ToString("yyyy-MM-dd HH:mm") ?? "Not available";
+    <div class="panel">
+        <div class="ph">
+            <span class="pt2">Dashboard</span>
+            <span class="pc2">Last refreshed @lastRefreshed</span>
+        </div>
+        @if (dashboard.Rows.Any())
+        {
+            <div style="overflow-x:auto">
+                <table class="dt">
+                    <thead>
+                        <tr>
+                            <th>Language</th>
+                            <th style="text-align:right">In Progress</th>
+                            <th style="text-align:right">Completed</th>
+                            <th style="text-align:right">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in dashboard.Rows)
+                        {
+                            var rowStyle = row.IsTotalsRow ? "font-weight:700;" : null;
+                            <tr style="@rowStyle">
+                                <td>@row.LanguageName</td>
+                                <td style="text-align:right">@row.InProgressCount</td>
+                                <td style="text-align:right">@row.CompletedCount</td>
+                                <td style="text-align:right">@row.TotalUsers</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <div style="padding:20px 6px;color:#666">Dashboard data is not available yet.</div>
+        }
+    </div>
+}
+
+@* --- Overview tab ------------------------------------------------------------ *@
+@if (Model.ActiveTab == "overview")
+{
+    var ov = Model.Overview;
+    <div class="mrow ov-summary-grid">
+        <div class="mc2 ov-summary-card">
+            <div class="ml2">Learners</div>
+            <div class="mv">@(ov?.TotalLearners.ToString() ?? "-")</div>
+        </div>
+        <div class="mc2 ov-summary-card ov-summary-card-border">
+            <div class="ml2">Completed</div>
+            <div class="mv">@(ov?.FullyCompleted.ToString() ?? "-")</div>
+            <div class="ov-summary-pct">@(ov != null ? $"{ov.CompletedPercent}%" : "-")</div>
+        </div>
+        <div class="mc2 ov-summary-card ov-summary-card-border">
+            <div class="ml2">In Progress</div>
+            <div class="mv">@(ov?.InProgress.ToString() ?? "-")</div>
+            <div class="ov-summary-pct">@(ov != null ? $"{ov.InProgressPercent}%" : "-")</div>
+        </div>
+        <div class="mc2 ov-summary-card ov-summary-card-border">
+            <div class="ml2">Not Started</div>
+            <div class="mv">@(ov?.NotStarted.ToString() ?? "-")</div>
+            <div class="ov-summary-pct">@(ov != null ? $"{ov.NotStartedPercent}%" : "-")</div>
+        </div>
+    </div>
+    @if (ov != null)
+    {
+        <div class="panel">
+            <div class="ph"><span class="pt2">Module completion rates</span></div>
+            @foreach (var bar in ov.CompletionBars)
+            {
+                <div class="brw">
+                    <div class="bl2">M@(bar.DisplayOrder): @bar.Title</div>
+                    <div class="bt2"><div class="bf" style="width:@(bar.Percent)%"></div></div>
+                    <div class="bpct">@bar.Percent%</div>
+                </div>
+            }
+        </div>
+        <div class="panel">
+            <div class="ph"><span class="pt2">Average scores per module</span></div>
+            @foreach (var bar in ov.ScoreBars)
+            {
+                <div class="brw">
+                    <div class="bl2">M@(bar.DisplayOrder): @bar.Title</div>
+                    <div class="bt2"><div class="bfb" style="width:@(bar.AvgScorePercent)%"></div></div>
+                    <div class="bpct">@bar.AvgScorePercent%</div>
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="panel ov-empty-panel">
+            <div class="ov-empty-state">No overview data to display until you choose at least one filter.</div>
+        </div>
+    }
+}
+@* --- User Activity tab ------------------------------------------------------- *@
+@if (Model.ActiveTab == "users" && Model.UserActivity != null)
+{
+    <div class="panel">
+        <div class="ph">
+            <span class="pt2">Learners</span>
+            <span class="pc2">@(Model.UserActivity?.Count ?? 0) of @Model.UserActivityTotalCount users</span>
+        </div>
+        <table class="dt">
+            <thead>
+                <tr>
+                    <th class="dt-icon-col"><span class="sr-only">Details</span></th>
+                    <th>Name</th><th>Email</th><th>Organization</th>
+                    <th>Modules passed</th><th>Last active</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var u in Model.UserActivity ?? Array.Empty<Volaris101.Application.Dtos.UserActivityRowDto>())
+                {
+                    var statusClass = u.ActivityStatus == "Completed"
+                        ? "tc"
+                        : u.ActivityStatus == "In Progress"
+                            ? "ti"
+                            : "tf";
+                    var detailId = $"user-modules-{u.UserId:N}";
+                    var hasDetails = u.ModuleDetails.Count > 0;
+                    <tr class="user-row">
+                        <td class="dt-icon-cell">
+                            <button type="button"
+                                    class="detail-toggle"
+                                    onclick="toggleUserDetails(this)"
+                                    aria-expanded="false"
+                                    aria-controls="@detailId"
+                                    aria-label="Show module details for @u.FullName"
+                                    data-show-label="Show module details for @u.FullName"
+                                    data-hide-label="Hide module details for @u.FullName"
+                                    title="Show module details"
+                                    disabled="@(!hasDetails)">
+                                <svg class="detail-svg detail-svg-list" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                    <path d="M8 6h11M8 12h11M8 18h11M4 6h.01M4 12h.01M4 18h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                                </svg>
+                                <svg class="detail-svg detail-svg-close" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                    <path d="m18 15-6-6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                            </button>
+                        </td>
+                        <td><strong>@u.FullName</strong></td>
+                        <td style="font-size:12px;color:#888">@u.Email</td>
+                        <td>@u.Company</td>
+                        <td>
+                            @if (u.ActivityStatus == "Not Started")
+                            {
+                                <span>0/10</span> <span class="tag @statusClass">Not Started</span>
+                            }
+                            else
+                            {
+                                <span>@u.ModulesPassed / @moduleCount</span>
+                                <span class="tag @statusClass">@u.ActivityStatus</span>
+                            }
+                        </td>
+                        <td>@(u.ActivityStatus == "Not Started" ? "" : u.LastActiveAt?.ToString("d MMM yyyy") ?? "-")</td>
+                    </tr>
+                    <tr class="user-detail-row" id="@detailId" hidden>
+                        <td colspan="6">
+                            <div class="user-module-details">
+                                <table class="module-detail-table" aria-label="Module details for @u.FullName">
+                                    <thead>
+                                        <tr>
+                                            <th>Module Name</th>
+                                            <th>Score</th>
+                                            <th>Last Completed</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var module in u.ModuleDetails)
+                                        {
+                                            var scoreClass = module.ScoreLabel == "Pass" ? "tc" : module.ScoreLabel == "Fail" ? "tf" : "tn2";
+                                            <tr>
+                                                <td>@module.ModuleName</td>
+                                                <td><span class="tag @scoreClass">@module.ScoreLabel</span></td>
+                                                <td>@(module.LastCompletedAt?.ToString("M/d/yyyy h:mm:ss tt") ?? "Not completed")</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@* --- Reporting / Export tab -------------------------------------------------- *@
+@if (Model.ActiveTab == "export")
+{
+    <div class="expsec">
+        @Html.AntiForgeryToken()
+        <div class="export-launch">
+            @if (hasExportFilterSelection)
+            {
+                <button type="button"
+                        class="export-link"
+                        id="export-link"
+                        aria-expanded="false"
+                        aria-controls="export-options"
+                        onclick="toggleExportOptions()">
+                    <span>Click to export:</span>
+                    <span class="export-caret" aria-hidden="true"></span>
+                </button>
+                <div class="export-options" id="export-options" hidden>
+                    <button type="button"
+                            class="bex report-export-btn"
+                            id="completion-report-btn"
+                            disabled="@(hasExportPreviewRows ? null : "disabled")"
+                            onclick="exportPortfolioReport(this)">
+                        Certification Report
+                    </button>
+                    <button type="button"
+                            class="bex report-export-btn"
+                            id="detail-activity-report-btn"
+                            disabled="@(hasExportPreviewRows ? null : "disabled")"
+                            onclick="exportReport('xlsx', this)">
+                        Detail Activity Report
+                    </button>
+                    @if (UserCtx.IsGlobalAdmin)
+                    {
+                        <button type="button"
+                                class="bex monthly-report-btn"
+                                id="monthly-report-btn"
+                                onclick="exportMonthlyReport(this)">
+                            Monthly Report
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    @if (hasExportPreviewRows)
+    {
+        <div class="panel">
+            <div class="ph">
+                <span class="pt2">Report Preview</span>
+                <span class="pc2">@(Model.ExportPreview?.Count ?? 0) of @Model.ExportPreviewTotalCount rows</span>
+            </div>
+            <div style="overflow-x:auto">
+                <table class="dt">
+                    <thead>
+                        <tr>
+                            <th>Name</th><th>Email</th><th>Employee ID</th>
+                            <th>Organization</th><th>Portfolio</th>
+                            <th>Status</th><th>Completed</th><th>Date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in Model.ExportPreview ?? Array.Empty<Volaris101.Application.Dtos.ReportingExportRowDto>())
+                        {
+                            var statusText = r.IsFullyCompleted
+                                ? "Completed"
+                                : r.LastActiveAt.HasValue
+                                    ? "In Progress"
+                                    : "Not Started";
+                            var statusClass = statusText == "Completed"
+                                ? "tc"
+                                : statusText == "In Progress"
+                                    ? "ti"
+                                    : "tf";
+                            var completedLabel = r.IsFullyCompleted ? "Yes" : "No";
+                            var dateValue = r.LastActiveAt ?? r.CompletedAt;
+                            <tr>
+                                <td>@r.FullName</td>
+                                <td style="font-size:12px;color:#888">@r.Email</td>
+                                <td>@r.EmployeeId</td>
+                                <td>@r.Company</td>
+                                <td>@r.Portfolio</td>
+                                <td><span class="tag @statusClass">@statusText</span></td>
+                                <td>@completedLabel</td>
+                                <td>@(dateValue?.ToString("yyyy-MM-dd") ?? "-")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="panel">
+            <div class="ph">
+                <span class="pt2">Report Preview</span>
+            </div>
+            <div class="report-empty-state">
+                Select one or more filters to view report data.
+            </div>
+        </div>
+    }
+}
+
+@if (Model.ActiveTab == "not-started" && Model.NotStartedUsers != null)
+{
+    <div class="expsec">
+        @Html.AntiForgeryToken()
+        <div style="display:flex;gap:10px">
+            <button type="button" class="bex xlsx-report-btn" id="export-not-started-btn" onclick="exportNotStartedReport(this)">Export XLSX</button>
+        </div>
+    </div>
+
+    @if (Model.NotStartedUsers.RequiresCompanySelection)
+    {
+        <div class="panel">
+            <div style="padding:20px 6px;color:#666">Select at least one organization to view not started users.</div>
+        </div>
+    }
+    else
+    {
+        <div class="panel">
+            <div class="ph">
+                <span class="pt2">Not started users</span>
+                <span class="pc2">@(Model.NotStartedUsers.Rows.Count) records</span>
+            </div>
+            <div style="overflow-x:auto">
+                <table class="dt">
+                    <thead>
+                        <tr>
+                            <th>Employee Name</th>
+                            <th>Email</th>
+                            <th>Manager Name</th>
+                            <th>Manager Email</th>
+                            <th>Organization</th>
+                            <th>Portfolio</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in Model.NotStartedUsers.Rows)
+                        {
+                            <tr>
+                                <td><strong>@row.EmployeeName</strong></td>
+                                <td style="font-size:12px;color:#888">@row.Email</td>
+                                <td>@(string.IsNullOrWhiteSpace(row.ManagerName) ? "-" : row.ManagerName)</td>
+                                <td>@(string.IsNullOrWhiteSpace(row.ManagerEmail) ? "-" : row.ManagerEmail)</td>
+                                <td>@row.Company</td>
+                                <td>@row.Portfolio</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+
+}
+
+@section Scripts {
+<script>
+const today = new Date().toISOString().split('T')[0];
+// Whether a date range is currently applied (both dates present on the server filter)
+const DATE_FILTER_ACTIVE = @((!string.IsNullOrEmpty(fromVal) && !string.IsNullOrEmpty(toVal)).ToString().ToLowerInvariant());
+const SHOW_DOMAIN_FILTER = @showDomainFilter.ToString().ToLowerInvariant();
+let sfPending = new Set(@Html.Raw(selectedStatusJson));
+
+function sfGetLabel() {
+    const values = [...sfPending];
+    if (values.length === 0 || values.length === 3)
+        return 'All statuses';
+    return values.join(', ');
+}
+
+function sfRefresh() {
+    const trigger = document.getElementById('sf-trigger');
+    const label = document.getElementById('sf-trigger-label');
+    const count = document.getElementById('sf-count');
+    const checkboxes = document.querySelectorAll('[data-status-option]');
+
+    if (label)
+        label.textContent = sfGetLabel();
+    if (count)
+        count.textContent = sfPending.size === 0 ? 'All statuses' : `${sfPending.size} selected`;
+    if (trigger)
+        trigger.classList.toggle('cf-active', sfPending.size > 0 && sfPending.size < 3);
+
+    checkboxes.forEach(cb => {
+        cb.checked = sfPending.has(cb.value);
+    });
+
+    updateFilterControlStates();
+}
+
+function sfOpenDropdown() {
+    const dropdown = document.getElementById('sf-dropdown');
+    const trigger = document.getElementById('sf-trigger');
+    if (!dropdown || !trigger) return;
+    dropdown.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+}
+
+function sfCloseDropdown() {
+    const dropdown = document.getElementById('sf-dropdown');
+    const trigger = document.getElementById('sf-trigger');
+    if (dropdown) dropdown.hidden = true;
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+}
+
+function sfToggleDropdown() {
+    const dropdown = document.getElementById('sf-dropdown');
+    if (!dropdown) return;
+    if (dropdown.hidden) sfOpenDropdown();
+    else sfCloseDropdown();
+}
+
+function sfSyncFromCheckboxes() {
+    const values = [...document.querySelectorAll('[data-status-option]')]
+        .filter(cb => cb.checked)
+        .map(cb => cb.value);
+    sfPending = new Set(values);
+    sfRefresh();
+    applyFilters(0);
+}
+
+function sfClear() {
+    sfPending = new Set();
+    sfRefresh();
+    applyFilters(0);
+}
+
+function openHowToGuide() {
+    window.open('/reporting/how-to', '_blank', 'noopener,noreferrer');
+}
+
+document.addEventListener('click', e => {
+    const wrap = document.querySelector('.status-filter-wrap');
+    if (!wrap) return;
+    if (!wrap.contains(e.target))
+        sfCloseDropdown();
+});
+
+// -- Organization filter --------------------------------------------------------
+@if (showCompanyFilter)
+{
+    <text>
+const CF_GROUPS   = @Html.Raw(groupsJson);
+const CF_CHILDREN = @Html.Raw(organizationChildrenJson);
+const CF_PORTFOLIO_IDS = new Set(@Html.Raw(portfolioOrganizationIdsJson));
+const CF_ALL      = CF_GROUPS.flatMap(g => g.companies);
+const CF_SIDEBAR  = @hasSidebar.ToString().ToLower();
+let   cfPending   = new Set(@Html.Raw(selectedJson));
+let   cfActivePf  = null;
+let   cfSearch    = '';
+
+function cfChildIds(parentId) {
+    const children = CF_CHILDREN?.[String(parentId)] ?? CF_CHILDREN?.[Number(parentId)] ?? [];
+    return Array.isArray(children) ? children.map(Number).filter(Number.isFinite) : [];
+}
+
+function cfExpandIds(seedIds) {
+    const expanded = new Set();
+    (seedIds || []).forEach(id => {
+        const num = Number(id);
+        if (Number.isFinite(num) && !expanded.has(num)) {
+            expanded.add(num);
+        }
+    });
+
+    const queue = [...expanded].filter(id => !CF_PORTFOLIO_IDS.has(id));
+    while (queue.length > 0) {
+        const parentId = queue.shift();
+        cfChildIds(parentId).forEach(childId => {
+            if (!expanded.has(childId)) {
+                expanded.add(childId);
+                queue.push(childId);
+            }
+        });
+    }
+
+    return [...expanded];
+}
+
+function cfSetSelectionState(seedIds, shouldSelect) {
+    cfExpandIds(seedIds).forEach(id => {
+        if (shouldSelect) {
+            cfPending.add(id);
+        } else {
+            cfPending.delete(id);
+        }
+    });
+}
+
+function cfOpenModal() {
+    cfPending = new Set(@Html.Raw(selectedJson));
+    cfSearch  = '';
+    cfActivePf = null;
+    document.getElementById('cf-search').value = '';
+    cfRefresh();
+    document.getElementById('cf-overlay').hidden = false;
+    document.getElementById('cf-search').focus();
+}
+
+function cfCloseModal(apply) {
+    document.getElementById('cf-overlay').hidden = true;
+    if (!apply) return;
+    applyFilters(0, [...cfPending], SHOW_DOMAIN_FILTER ? [...dfPending] : null);
+}
+
+function cfOnSearch(val) {
+    cfSearch  = (val || '').toLowerCase().trim();
+    cfActivePf = null;
+    cfRefresh();
+}
+
+function cfMatchesSearch(company) {
+    if (!cfSearch) return true;
+    const companyName = company && typeof company === 'object'
+        ? ((company.displayName || company.companyName || '') + '').toLowerCase()
+        : (company || '').toLowerCase();
+    return companyName.includes(cfSearch);
+}
+
+function cfClearSearch() {
+    const search = document.getElementById('cf-search');
+    if (!search) return;
+    search.value = '';
+    cfSearch = '';
+    cfActivePf = null;
+    cfRefresh();
+    search.focus();
+}
+
+function cfSetActivePf(pf) {
+    cfActivePf = pf;
+    cfRefresh();
+}
+
+function cfToggleCompany(coId) {
+    const id = Number(coId);
+    if (!Number.isFinite(id)) return;
+    const shouldSelect = !cfPending.has(id);
+    cfSetSelectionState([id], shouldSelect);
+    cfRefresh();
+}
+
+function cfToggleAll() {
+    const vis = cfVisibleCompanies();
+    const allSel = vis.length > 0 && vis.every(c => cfPending.has(c.organizationId));
+    cfSetSelectionState(vis.map(c => c.organizationId), !allSel);
+    cfRefresh();
+}
+
+function cfTogglePortfolio(pf) {
+    const grp = CF_GROUPS.find(g => g.portfolioName === pf);
+    if (!grp) return;
+    const vis = grp.companies.filter(c => cfMatchesSearch(c));
+    const allSel = vis.every(c => cfPending.has(c.organizationId));
+    cfSetSelectionState(vis.map(c => c.organizationId), !allSel);
+    cfRefresh();
+}
+
+function cfVisibleCompanies() {
+    return CF_GROUPS
+        .filter(g => !cfActivePf || g.portfolioName === cfActivePf)
+        .flatMap(g => g.companies)
+        .filter(c => cfMatchesSearch(c));
+}
+
+function cfRefresh() {
+    const vis   = cfVisibleCompanies();
+    const allSel = vis.length > 0 && vis.every(c => cfPending.has(c.organizationId));
+
+    // select-all checkbox
+    const chkAll = document.getElementById('cf-chk-all');
+    chkAll.checked       = allSel;
+    chkAll.indeterminate = !allSel && vis.some(c => cfPending.has(c.organizationId));
+    document.getElementById('cf-sa-label').textContent = cfSearch ? 'Select all matching' : 'Select all organizations';
+    document.getElementById('cf-sa-hint').textContent  = vis.length + ' organizat' + (vis.length === 1 ? 'ion' : 'ions');
+
+    // sidebar
+    if (CF_SIDEBAR) {
+        document.querySelectorAll('.cf-sb-item,.cf-sb-all').forEach(el => el.classList.remove('cf-sb-active'));
+        const activeEl = cfActivePf
+            ? document.querySelector(`.cf-sb-item[data-pf="${CSS.escape(cfActivePf)}"]`)
+            : document.getElementById('cf-sb-all');
+        if (activeEl) activeEl.classList.add('cf-sb-active');
+
+        CF_GROUPS.forEach(g => {
+            const cnt = g.companies.filter(c => cfPending.has(c.organizationId)).length;
+            const badge = document.querySelector(`.cf-sb-badge[data-pf-badge="${CSS.escape(g.portfolioName)}"]`);
+            if (badge) { badge.hidden = cnt === 0; badge.textContent = cnt || ''; }
+        });
+    }
+
+    // sections / rows
+    let anyVisible = false;
+    CF_GROUPS.forEach(g => {
+        const section = document.querySelector(`.cf-pf-section[data-section="${CSS.escape(g.portfolioName)}"]`);
+        if (!section) return;
+        const showSection = (!cfActivePf || cfActivePf === g.portfolioName);
+        const visInGrp = g.companies.filter(c => cfMatchesSearch(c));
+        section.hidden = !showSection || visInGrp.length === 0;
+        if (!section.hidden) anyVisible = true;
+
+        // per-portfolio count + selall label
+        const selCnt  = g.companies.filter(c => cfPending.has(c.organizationId)).length;
+        const countEl = document.querySelector(`[data-pf-count="${CSS.escape(g.portfolioName)}"]`);
+        if (countEl) countEl.textContent = selCnt + ' / ' + g.companies.length + ' selected';
+        const selAllBtn = document.querySelector(`[data-pf-selall="${CSS.escape(g.portfolioName)}"]`);
+        if (selAllBtn) selAllBtn.textContent = visInGrp.every(c => cfPending.has(c.organizationId)) && visInGrp.length > 0 ? 'Deselect all' : 'Select all';
+
+        g.companies.forEach(co => {
+            const row  = section.querySelector(`.cf-co-row[data-company-id="${CSS.escape(String(co.organizationId))}"]`);
+            if (!row) return;
+            const show = showSection && cfMatchesSearch(co);
+            row.hidden = !show;
+            const chk  = cfPending.has(co.organizationId);
+            row.classList.toggle('cf-co-checked', chk);
+            const box = row.querySelector('input[type=checkbox]');
+            if (box) box.checked = chk;
+        });
+    });
+
+    document.getElementById('cf-empty').hidden = anyVisible;
+    const searchClear = document.getElementById('cf-search-clear');
+    if (searchClear) searchClear.hidden = !cfSearch;
+
+    // footer count
+    const n = cfPending.size;
+    const ftEl = document.getElementById('cf-ft-count');
+    ftEl.innerHTML = n === 0 ? 'No filter - showing all organizations'
+        : n === CF_ALL.length ? 'All organizations selected'
+        : '<strong>' + n + '</strong> organizat' + (n === 1 ? 'ion' : 'ions') + ' selected';
+
+    updateFilterControlStates();
+}
+
+function cfClearPending() { cfPending = new Set(); cfRefresh(); }
+    </text>
+}
+
+@if (showDomainFilter)
+{
+    <text>
+const DF_ALL = @Html.Raw(domainsJson);
+let   dfPending = new Set(@Html.Raw(selectedDomainsJson));
+let   dfAllowAutoOpen = false;
+
+function dfCurrentQuery() {
+    const input = document.getElementById('fl-domain');
+    return input ? normalizeDomainInput(input.value) : '';
+}
+
+function dfMatches() {
+    const q = dfCurrentQuery();
+    if (!q) return [];
+    return DF_ALL.filter(d => normalizeDomainInput(d).startsWith(q));
+}
+
+function dfSetDropdownState(open) {
+    const dropdown = document.getElementById('df-dropdown');
+    const input = document.getElementById('fl-domain');
+    if (dropdown) dropdown.hidden = !open;
+    if (input) input.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function dfToggleDomain(domain) {
+    const d = normalizeDomainInput(domain);
+    if (!d) return;
+    dfPending.has(d) ? dfPending.delete(d) : dfPending.add(d);
+    dfRefresh();
+    applyFilters(0, null, [...dfPending]);
+}
+
+function dfSelectExactMatch() {
+    const q = dfCurrentQuery();
+    if (!q) return false;
+    const exact = DF_ALL.find(d => normalizeDomainInput(d) === q);
+    const match = exact || (dfMatches().length === 1 ? dfMatches()[0] : null);
+    if (!match) return false;
+    const norm = normalizeDomainInput(match);
+    return true;
+}
+
+function dfHandleKeydown(event) {
+    if (!event || event.key !== 'Enter') return;
+    event.preventDefault();
+    dfRefresh();
+}
+
+function dfRefresh() {
+    const input = document.getElementById('fl-domain');
+    const dropdown = document.getElementById('df-dropdown');
+    const list = document.getElementById('df-dropdown-list');
+    const count = document.getElementById('df-dropdown-count');
+    const chips = document.getElementById('df-chips');
+    const matches = dfMatches();
+    const query = dfCurrentQuery();
+
+    if (dropdown && list) {
+        if (!query || matches.length === 0) {
+            list.innerHTML = '';
+            if (count) count.textContent = '';
+            dfSetDropdownState(false);
+        } else {
+            list.innerHTML = '';
+            matches.forEach(domain => {
+                const norm = normalizeDomainInput(domain);
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'df-option' + (dfPending.has(norm) ? ' df-option-checked' : '');
+                row.innerHTML = '<input type="checkbox" tabindex="-1" ' + (dfPending.has(norm) ? 'checked ' : '') + 'aria-hidden="true"><span>' + domain.replace(/^@@+/, '') + '</span>';
+                row.addEventListener('mousedown', e => { e.preventDefault(); dfToggleDomain(domain); });
+                list.appendChild(row);
+            });
+            if (count) count.textContent = matches.length + ' match' + (matches.length === 1 ? '' : 'es');
+            dfSetDropdownState(dfAllowAutoOpen);
+        }
+    }
+
+    if (chips) {
+        chips.innerHTML = '';
+        [...dfPending].sort().forEach(d => {
+            const chip = document.createElement('span');
+            chip.className = 'cf-chip';
+            const label = document.createElement('span');
+            label.textContent = d;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.setAttribute('aria-label', 'Remove domain');
+            btn.textContent = 'x';
+            btn.addEventListener('click', () => dfRemoveDomain(d));
+            chip.appendChild(label);
+            chip.appendChild(btn);
+            chips.appendChild(chip);
+        });
+    }
+
+    toggleDomainClear();
+    updateFilterControlStates();
+}
+
+function dfRemoveDomain(domain) {
+    const d = normalizeDomainInput(domain);
+    if (!d) return;
+    dfPending.delete(d);
+    dfRefresh();
+    applyFilters(0, null, [...dfPending]);
+}
+
+function dfClearPending() { dfPending = new Set(); dfRefresh(); }
+
+document.addEventListener('click', e => {
+    const wrap = document.querySelector('.domain-filter-wrap');
+    if (!wrap) return;
+    const dropdown = document.getElementById('df-dropdown');
+    if (dropdown && !wrap.contains(e.target)) {
+        dfSetDropdownState(false);
+    }
+});
+    </text>
+}
+
+function validateAndApply() {
+    toggleDateClear();
+    toggleMonthlyReportButton();
+
+    const fromInput = document.getElementById('fl-from');
+    const toInput   = document.getElementById('fl-to');
+    const errFrom   = document.getElementById('err-from');
+    const errTo     = document.getElementById('err-to');
+    if (!fromInput || !toInput) return;
+
+    const from = fromInput.value;
+    const to   = toInput.value;
+    let valid  = true;
+
+    // Reset errors
+    if (errFrom) errFrom.textContent = '';
+    if (errTo) errTo.textContent   = '';
+    fromInput.classList.remove('date-invalid');
+    toInput.classList.remove('date-invalid');
+
+    // Validate From Date
+    if (from && from > today) {
+        if (errFrom) errFrom.textContent = 'From date cannot be in the future.';
+        fromInput.classList.add('date-invalid');
+        valid = false;
+    }
+
+    // Validate To Date
+    if (to && to > today) {
+        if (errTo) errTo.textContent = 'To date cannot be in the future.';
+        toInput.classList.add('date-invalid');
+        valid = false;
+    }
+
+    // Validate range
+    if (from && to && from > to) {
+        if (errTo) errTo.textContent = 'To date must be on or after From date.';
+        toInput.classList.add('date-invalid');
+        valid = false;
+    }
+
+    if (!valid) return;
+
+    // Only filter by date when BOTH dates are set. If a date range is already
+    // applied and the user breaks the pair, re-apply to remove the date filter.
+    if (from && to) {
+        applyFilters();
+    } else if (DATE_FILTER_ACTIVE && !from && !to) {
+        applyFilters();
+    }
+}
+
+function normalizeDomainInput(value) {
+    return (value || '').trim().replace(/^@@+/, '').toLowerCase();
+}
+
+function validateDomain() {
+    const domainInput = document.getElementById('fl-domain');
+    const errDomain = document.getElementById('err-domain');
+    if (!domainInput || !errDomain) return true;
+
+    const raw = domainInput.value.trim();
+    const domain = normalizeDomainInput(raw);
+    const isValid = !raw || /^[a-z0-9][a-z0-9.\-]*$/i.test(domain);
+
+    errDomain.textContent = isValid ? '' : 'Enter a valid domain, such as example.com.';
+    domainInput.classList.toggle('date-invalid', !isValid);
+    return isValid;
+}
+
+function validateDomainAndApply() {
+    if (validateDomain()) dfRefresh();
+}
+
+function clearDates() {
+    const fromInput = document.getElementById('fl-from');
+    const toInput = document.getElementById('fl-to');
+    const errFrom = document.getElementById('err-from');
+    const errTo = document.getElementById('err-to');
+    if (!fromInput || !toInput || !errFrom || !errTo) return;
+
+    fromInput.value = '';
+    toInput.value   = '';
+    errFrom.textContent = '';
+    errTo.textContent   = '';
+    fromInput.classList.remove('date-invalid');
+    toInput.classList.remove('date-invalid');
+    toggleDateClear();
+    toggleMonthlyReportButton();
+    applyFilters();
+}
+
+// Show the "Clear dates" button only when at least one date is entered
+function toggleDateClear() {
+    const fromInput = document.getElementById('fl-from');
+    const toInput   = document.getElementById('fl-to');
+    const btn  = document.getElementById('date-clear-btn');
+    if (!btn || !fromInput || !toInput) return;
+    btn.hidden = !(fromInput.value || toInput.value);
+    updateFilterControlStates();
+}
+
+function toggleMonthlyReportButton() {
+    const btn = document.getElementById('monthly-report-btn');
+    if (!btn) return;
+    const fromInput = document.getElementById('fl-from');
+    const toInput = document.getElementById('fl-to');
+    if (!fromInput || !toInput) return;
+    const from = fromInput.value;
+    const to   = toInput.value;
+    const valid = !!(from && to && from <= to && from <= today && to <= today);
+    btn.disabled = !valid;
+}
+
+function updateFilterControlStates() {
+    const searchInput = document.getElementById('fl-search');
+    const domainInput = document.getElementById('fl-domain');
+    const moduleInput = document.getElementById('fl-module');
+    const fromInput = document.getElementById('fl-from');
+    const toInput = document.getElementById('fl-to');
+    const orgTrigger = document.getElementById('cf-trigger');
+    const statusTrigger = document.getElementById('sf-trigger');
+
+    if (searchInput) {
+        searchInput.classList.toggle('filter-active', !!searchInput.value.trim());
+    }
+
+    if (domainInput) {
+        domainInput.classList.toggle('filter-active', typeof dfPending !== 'undefined' && dfPending.size > 0);
+    }
+
+    if (moduleInput) {
+        moduleInput.classList.toggle('filter-active', !!moduleInput.value);
+    }
+
+    const hasFullDateRange = !!(fromInput && toInput && fromInput.value && toInput.value);
+    if (fromInput) {
+        fromInput.classList.toggle('filter-active', hasFullDateRange);
+    }
+    if (toInput) {
+        toInput.classList.toggle('filter-active', hasFullDateRange);
+    }
+
+    if (statusTrigger) {
+        statusTrigger.classList.toggle('filter-active', typeof sfPending !== 'undefined' && sfPending.size > 0 && sfPending.size < 3);
+    }
+
+    if (orgTrigger) {
+        const totalCompanies = typeof CF_ALL !== 'undefined' ? CF_ALL.length : 0;
+        const hasCompanyFilter = typeof cfPending !== 'undefined' && cfPending.size > 0 && (totalCompanies === 0 || cfPending.size < totalCompanies);
+        orgTrigger.classList.toggle('filter-active', hasCompanyFilter);
+    }
+}
+
+function toggleSearchClear() {
+    const search = document.getElementById('fl-search');
+    const clear = document.getElementById('fl-search-clear');
+    if (!search || !clear) return;
+    clear.hidden = !search.value;
+    updateFilterControlStates();
+}
+
+function toggleDomainClear() {
+    const domain = document.getElementById('fl-domain');
+    const clear = document.getElementById('fl-domain-clear');
+    if (!domain || !clear) return;
+    clear.hidden = !(domain.value || (typeof dfPending !== 'undefined' && dfPending.size > 0));
+    updateFilterControlStates();
+}
+
+function clearLearnerFilter() {
+    const search = document.getElementById('fl-search');
+    if (!search) return;
+    search.value = '';
+    toggleSearchClear();
+    applyFilters(0);
+    search.focus();
+}
+
+function clearDomainFilter() {
+    if (typeof dfPending !== 'undefined') {
+        const domain = document.getElementById('fl-domain');
+        const hasSelection = dfPending.size > 0;
+        if (domain) domain.value = '';
+        if (!hasSelection) {
+            dfRefresh();
+            toggleDomainClear();
+            return;
+        }
+        dfClearPending();
+        dfSetDropdownState(false);
+        applyFilters(0, null, []);
+        return;
+    }
+
+    const domain = document.getElementById('fl-domain');
+    const errDomain = document.getElementById('err-domain');
+    if (!domain) return;
+    domain.value = '';
+    domain.classList.remove('date-invalid');
+    if (errDomain) errDomain.textContent = '';
+    toggleDomainClear();
+    applyFilters(0);
+    domain.focus();
+}
+
+function resetDetailToggle(button) {
+    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute('aria-label', button.dataset.showLabel || 'Show module details');
+    button.title = 'Show module details';
+
+    const row = button.closest('.user-row');
+    if (row) row.classList.remove('details-open');
+}
+
+function toggleUserDetails(button) {
+    const detailId = button.getAttribute('aria-controls');
+    const detailRow = detailId ? document.getElementById(detailId) : null;
+    if (!detailRow) return;
+
+    const shouldOpen = button.getAttribute('aria-expanded') !== 'true';
+
+    document.querySelectorAll('.user-detail-row').forEach(row => {
+        row.hidden = true;
+    });
+    document.querySelectorAll('.detail-toggle[aria-expanded="true"]').forEach(resetDetailToggle);
+
+    if (!shouldOpen) return;
+
+    detailRow.hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+    button.setAttribute('aria-label', button.dataset.hideLabel || 'Hide module details');
+    button.title = 'Hide module details';
+
+    const row = button.closest('.user-row');
+    if (row) row.classList.add('details-open');
+}
+
+function applyFilters(delay = 400, companies = null, domains = null) {
+    if (!validateDomain()) return;
+
+    const searchInput = document.getElementById('fl-search');
+    const moduleInput = document.getElementById('fl-module');
+    const fromInput = document.getElementById('fl-from');
+    const toInput = document.getElementById('fl-to');
+    const search = searchInput ? searchInput.value : '';
+    const module = moduleInput ? moduleInput.value : '';
+    const from   = fromInput ? fromInput.value : '';
+    const to     = toInput ? toInput.value : '';
+    const includeLeavers = document.getElementById('fl-include-leavers')?.checked ?? false;
+    const statusValues = [...sfPending];
+    const params = new URLSearchParams();
+    if (search) params.set('SearchTerm', search);
+    const selectedDomainValues = domains !== null
+        ? domains
+        : (typeof dfPending !== 'undefined' && dfPending.size > 0 ? [...dfPending] : []);
+    selectedDomainValues.forEach(d => params.append('Domains', normalizeDomainInput(d)));
+    if (module) params.set('ModuleOrder', module);
+    statusValues.forEach(status => params.append('Status', status));
+    // Date filter only applies when BOTH dates are set - never send a partial range
+    if (from && to) {
+        params.set('FromDate', from);
+        params.set('ToDate', to);
+    }
+
+    clearTimeout(window._filterTimer);
+    window._filterTimer = setTimeout(() => {
+        const loader = document.getElementById('filter-loading');
+        if (loader) loader.hidden = false;
+        const selectedDomainValues = domains !== null
+            ? domains
+            : (typeof dfPending !== 'undefined' && dfPending.size > 0 ? [...dfPending] : []);
+        const coList = companies !== null ? companies : @Html.Raw(selectedJson);
+        const payload = {
+            searchTerm: search || null,
+            domain: selectedDomainValues.length === 1 ? normalizeDomainInput(selectedDomainValues[0]) : null,
+            moduleOrder: module ? Number(module) : null,
+            lastActiveDays: null,
+            companies: coList.length ? coList.map(Number) : [],
+            portfolio: null,
+            fromDate: from && to ? new Date(`${from}T00:00:00Z`).toISOString() : null,
+            toDate: from && to ? new Date(`${to}T23:59:59.999Z`).toISOString() : null,
+            domains: selectedDomainValues.length ? selectedDomainValues.map(d => normalizeDomainInput(d)) : [],
+            refreshToken: null,
+            status: statusValues,
+            includeLeavers: includeLeavers
+        };
+
+        fetch('/reporting/state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+            .then(async resp => {
+                if (resp.ok) return resp.json();
+                const text = await resp.text();
+                throw new Error(text || `Failed to save reporting state (HTTP ${resp.status}).`);
+            })
+            .then(data => {
+                window.location.href = `${window.location.pathname}?stateToken=${encodeURIComponent(data.token)}`;
+            })
+            .catch(err => {
+                if (loader) loader.hidden = true;
+                alert(err.message || 'Failed to apply filters.');
+            });
+    }, delay);
+}
+
+// Export the current report respecting all active filters (incl. selected companies).
+// Posts the applied filter as JSON with the antiforgery token in the header - the
+// export actions bind [FromBody], so a plain form POST would send an empty filter.
+const EXPORT_FILTER = @Html.Raw(exportFilterJson);
+const AVAILABLE_COMPANY_GROUPS = @Html.Raw(groupsJson);
+
+function setReportLoading(isLoading, text = 'Generating report…') {
+    const loader = document.getElementById('filter-loading');
+    const textEl = document.querySelector('#filter-loading .filter-loading-text');
+    if (loader) loader.hidden = !isLoading;
+    if (textEl) textEl.textContent = isLoading ? text : 'Updating results…';
+}
+
+async function exportReport(format, btn) {
+    const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
+    const token = tokenEl ? tokenEl.value : '';
+    const label = btn ? btn.textContent : '';
+    setReportLoading(true);
+    if (btn) { btn.disabled = true; btn.textContent = 'Exporting…'; }
+    try {
+        const resp = await fetch('/reporting/export/' + format, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': token },
+            body: JSON.stringify(EXPORT_FILTER)
+        });
+        if (!resp.ok) { alert('Export failed (HTTP ' + resp.status + ').'); return; }
+        const blob = await resp.blob();
+        let filename = format === 'xlsx'
+            ? 'Volaris101_Detail_Activity_Report.xlsx'
+            : 'Volaris101_Report.' + (format === 'csv' ? 'csv' : 'xlsx');
+        const cd = resp.headers.get('Content-Disposition');
+        if (cd) { const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd); if (m) filename = decodeURIComponent(m[1]); }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        alert('Export failed: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = label; }
+        setReportLoading(false);
+    }
+}
+
+function validatePortfolioReportSelection() {
+    const selectedIds = (EXPORT_FILTER.companies && EXPORT_FILTER.companies.length > 0)
+        ? [...new Set(EXPORT_FILTER.companies.filter(id => id > 0))]
+        : [...new Set(AVAILABLE_COMPANY_GROUPS.flatMap(g => g.companies.map(c => c.organizationId)).filter(id => id > 0))];
+
+    if (selectedIds.length === 0) {
+        alert('Select at least one organization to generate the certification report.');
+        return false;
+    }
+
+    const portfolios = [...new Set(
+        AVAILABLE_COMPANY_GROUPS
+            .filter(g => g.companies.some(c => selectedIds.includes(c.organizationId)))
+            .map(g => g.portfolioName)
+            .filter(Boolean)
+    )];
+
+    if (portfolios.length !== 1) {
+        alert('Certification report requires all selected organizations to belong to the same portfolio.');
+        return false;
+    }
+
+    return true;
+}
+
+async function exportPortfolioReport(btn) {
+    if (!validatePortfolioReportSelection()) return;
+
+    const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
+    const token = tokenEl ? tokenEl.value : '';
+    const label = btn ? btn.textContent : '';
+    setReportLoading(true, 'Generating certification report…');
+    if (btn) { btn.disabled = true; btn.textContent = 'Exporting…'; }
+    try {
+        const resp = await fetch('/reporting/export/portfolio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': token },
+            body: JSON.stringify(EXPORT_FILTER)
+        });
+        if (!resp.ok) {
+            const message = await resp.text();
+            alert(message || ('Export failed (HTTP ' + resp.status + ').'));
+            return;
+        }
+        const blob = await resp.blob();
+        let filename = 'Volaris101_Certification_Report.xlsx';
+        const cd = resp.headers.get('Content-Disposition');
+        if (cd) { const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd); if (m) filename = decodeURIComponent(m[1]); }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        alert('Export failed: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = label; }
+        setReportLoading(false);
+    }
+}
+
+async function exportMonthlyReport(btn) {
+    const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
+    const token = tokenEl ? tokenEl.value : '';
+    const label = btn ? btn.textContent : '';
+    setReportLoading(true);
+    if (btn) { btn.disabled = true; btn.textContent = 'Exporting…'; }
+    try {
+        const resp = await fetch('/reporting/export/monthly', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': token },
+            body: JSON.stringify(EXPORT_FILTER)
+        });
+        if (!resp.ok) { alert('Export failed (HTTP ' + resp.status + ').'); return; }
+        const blob = await resp.blob();
+        let filename = 'Volaris101 Monthly Report.xlsx';
+        const cd = resp.headers.get('Content-Disposition');
+        if (cd) { const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd); if (m) filename = decodeURIComponent(m[1]); }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        alert('Export failed: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = label; }
+        setReportLoading(false);
+        toggleMonthlyReportButton();
+    }
+}
+
+async function exportNotStartedReport(btn) {
+    const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
+    const token = tokenEl ? tokenEl.value : '';
+    const label = btn ? btn.textContent : '';
+    setReportLoading(true, 'Generating not started users report…');
+    if (btn) { btn.disabled = true; btn.textContent = 'Exporting…'; }
+    try {
+        const resp = await fetch('/reporting/export/not-started', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': token },
+            body: JSON.stringify(EXPORT_FILTER)
+        });
+        if (!resp.ok) {
+            const message = await resp.text();
+            alert(message || ('Export failed (HTTP ' + resp.status + ').'));
+            return;
+        }
+        const blob = await resp.blob();
+        let filename = 'Volaris101_Not_Started.xlsx';
+        const cd = resp.headers.get('Content-Disposition');
+        if (cd) { const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd); if (m) filename = decodeURIComponent(m[1]); }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        alert('Export failed: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = label; }
+        setReportLoading(false);
+    }
+}
+
+function toggleExportOptions() {
+    const panel = document.getElementById('export-options');
+    const trigger = document.getElementById('export-link');
+    if (!panel || !trigger) return;
+    const isOpen = panel.classList.contains('open');
+    const timerKey = '__hideTimer';
+
+    if (panel[timerKey]) {
+        clearTimeout(panel[timerKey]);
+        panel[timerKey] = null;
+    }
+
+    if (!isOpen) {
+        panel.hidden = false;
+        requestAnimationFrame(() => panel.classList.add('open'));
+        trigger.setAttribute('aria-expanded', 'true');
+        return;
+    }
+
+    panel.classList.remove('open');
+    trigger.setAttribute('aria-expanded', 'false');
+    panel[timerKey] = window.setTimeout(() => {
+        panel.hidden = true;
+        panel[timerKey] = null;
+    }, 180);
+}
+
+// Close organization modal on Escape
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        const overlay = document.getElementById('cf-overlay');
+        if (overlay && !overlay.hidden) cfCloseModal(false);
+    }
+});
+
+toggleSearchClear();
+toggleDomainClear();
+toggleDateClear();
+toggleMonthlyReportButton();
+updateFilterControlStates();
+sfRefresh();
+@if (showDomainFilter)
+{
+    <text>dfRefresh();</text>
+}
+</script>
+}
+

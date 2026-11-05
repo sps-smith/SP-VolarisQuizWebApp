@@ -1,0 +1,2026 @@
+@model Volaris101.Web.Controllers.CmsPageModel
+@inject Volaris101.Application.Interfaces.ICurrentUserContext UserCtx
+@{
+    ViewData["Title"] = "Admin";
+    ViewData["ActiveTab"] = "admin";
+}
+
+<div class="atabs">
+    <a class="atab @(Model.ActiveTab == "byquiz" ? "on" : "")" href="/admin/cms">By quiz</a>
+    <a class="atab @(Model.ActiveTab == "allq" ? "on" : "")" href="/admin/cms/questions">All questions</a>
+    <a class="atab @(Model.ActiveTab == "roles" ? "on" : "")" href="/admin/users">Roles &amp; users</a>
+    <a class="atab @(Model.ActiveTab == "groups" ? "on" : "")" href="/admin/groups">Groups</a>
+</div>
+
+<div hidden>
+    @Html.AntiForgeryToken()
+</div>
+
+@if (Model.ActiveTab == "byquiz")
+{
+    <div class="admin-toolbar">
+        <div class="admin-helper">Select a quiz to view and edit its questions</div>
+        <button class="bec" onclick="openAddQuizModal()">+ Add quiz</button>
+    </div>
+
+    <div class="admin-quiz-list">
+        @foreach (var quiz in Model.Quizzes)
+        {
+            var selectedQuiz = Model.SelectedQuiz?.QuizId == quiz.QuizId ? Model.SelectedQuiz : null;
+            <section class="admin-quiz-card @(selectedQuiz != null ? "is-open" : "")">
+                <div class="admin-quiz-head">
+                    <div>
+                        <div class="admin-quiz-eyebrow">MODULE @quiz.DisplayOrder</div>
+                        <h2>M@(quiz.DisplayOrder): @quiz.Title</h2>
+                    </div>
+                    <div class="admin-quiz-meta">
+                        <span class="tag @(quiz.IsPublished ? "tc" : "draft")">@(quiz.IsPublished ? "Published" : "Draft")</span>
+                        <span>@quiz.QuestionCount question@(quiz.QuestionCount != 1 ? "s" : "")</span>
+                        @if (!quiz.IsPublished)
+                        {
+                            <button class="bec" data-quiz-id="@quiz.QuizId" data-quiz-title="@quiz.Title" onclick="publishQuizFromButton(this)">Publish</button>
+                        }
+                        <button class="rbtn" data-quiz-id="@quiz.QuizId" data-quiz-title="@quiz.Title" data-quiz-published="@quiz.IsPublished.ToString().ToLowerInvariant()" onclick="openCopyQuizLinkModalFromButton(this)">Copy quiz link</button>
+                        @if (selectedQuiz != null)
+                        {
+                            <button class="rbtn" data-quiz-id="@quiz.QuizId" data-quiz-title="@quiz.Title" onclick="openEditQuizModalFromButton(this)">Edit quiz</button>
+                            <button class="bec" onclick="openAddQuestionModal('@quiz.QuizId')">+ Add question</button>
+                        }
+                        else
+                        {
+                            <a class="rbtn" href="/admin/cms/quiz/@quiz.QuizId">View questions</a>
+                        }
+                    </div>
+                </div>
+
+                @if (selectedQuiz != null)
+                {
+                    <div class="admin-lang-row">
+                        @foreach (var language in selectedQuiz.Languages)
+                        {
+                            <a class="admin-lang-chip @(language.IsSelected ? "on" : "")"
+                               href="/admin/cms/quiz/@quiz.QuizId?lang=@language.Code"
+                               aria-current="@(language.IsSelected ? "true" : "false")">
+                                @language.Label
+                            </a>
+                        }
+                    </div>
+
+                    <div class="admin-qtable-wrap" id="quiz-questions-@quiz.QuizId">
+                        <table class="dt admin-qtable">
+                            <thead>
+                                <tr>
+                                    <th>Question</th>
+                                    <th>Type</th>
+                                    <th>Correct answer(s)</th>
+                                    <th class="admin-qactions"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var q in selectedQuiz.Questions)
+                                {
+                                    var correctAnswers = q.Options
+                                        .Where(o => o.IsCorrect)
+                                        .OrderBy(o => o.DisplayOrder)
+                                        .Select(o => $"{(char)('A' + Math.Max(o.DisplayOrder, 1) - 1)}: {o.OptionText}")
+                                        .ToList();
+                                    var correctAnswerText = correctAnswers.Count > 0
+                                        ? string.Join("; ", correctAnswers)
+                                        : "No correct answer set";
+
+                                    <tr>
+                                        <td class="admin-question-cell">@q.QuestionText</td>
+                                        <td><span class="tag @(q.IsMultiSelect ? "te" : "tn2")">@(q.IsMultiSelect ? "Multi" : "Single")</span></td>
+                                        <td class="admin-answer-cell">@correctAnswerText</td>
+                                        <td class="admin-qactions">
+                                            <button class="rbtn" onclick="openEditQuestion('@q.QuestionId', '@selectedQuiz.SelectedLanguage')">Edit</button>
+                                            <button class="rbtn danger" onclick="deleteQuestion('@q.QuestionId')">Del</button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </section>
+        }
+    </div>
+}
+
+@if (Model.ActiveTab == "allq")
+{
+    var allqSearch = Context.Request.Query["search"].ToString();
+    var allqQuizId = Context.Request.Query["quizId"].ToString();
+    var allqLanguages = new[] { ("en", "EN"), ("de", "DE"), ("es", "ES"), ("fr", "FR"), ("pt", "PT") };
+    string AllQuestionLangUrl(string code)
+    {
+        var parts = new List<string> { $"lang={code}" };
+        if (!string.IsNullOrWhiteSpace(allqSearch))
+            parts.Add($"search={System.Net.WebUtility.UrlEncode(allqSearch)}");
+        if (!string.IsNullOrWhiteSpace(allqQuizId))
+            parts.Add($"quizId={System.Net.WebUtility.UrlEncode(allqQuizId)}");
+        return "/admin/cms/questions?" + string.Join("&", parts);
+    }
+
+    <div class="allq-toolbar">
+        <div class="allq-filters">
+            <input class="fi allq-search" id="q-search" type="text" placeholder="Search questions..."
+                   value="@allqSearch" oninput="searchQuestions()">
+            <select class="fi allq-quiz-filter" id="q-quiz-filter" onchange="searchQuestions()">
+                <option value="">All quizzes</option>
+                @foreach (var q in Model.Quizzes)
+                {
+                    <option value="@q.QuizId" selected="@(q.QuizId.ToString().Equals(allqQuizId, StringComparison.OrdinalIgnoreCase) ? "selected" : null)">M@(q.DisplayOrder): @q.Title</option>
+                }
+            </select>
+            <input type="hidden" id="q-lang" value="@Model.SelectedLanguage">
+        </div>
+
+        <div class="allq-language">
+            <span>View language:</span>
+            @foreach (var (code, label) in allqLanguages)
+            {
+                <a class="admin-lang-chip @(Model.SelectedLanguage == code ? "on" : "")"
+                   href="@AllQuestionLangUrl(code)"
+                   aria-current="@(Model.SelectedLanguage == code ? "true" : "false")">@label</a>
+            }
+        </div>
+
+        <span id="q-count" class="allq-count">@(Model.AllQuestions?.Count ?? 0) questions</span>
+    </div>
+    <div class="filter-loading" id="admin-filter-loading" hidden style="padding-top:0;margin-bottom:12px">
+        <div class="filter-spinner"></div>
+        <span class="filter-loading-text">Updating results...</span>
+    </div>
+
+    <div class="allq-table-panel">
+        <table class="dt allq-table">
+            <thead>
+                <tr>
+                    <th>Question</th>
+                    <th>Quiz</th>
+                    <th>Type</th>
+                    <th>Options</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="allq-tbody">
+                @if (Model.AllQuestions != null)
+                {
+                    @foreach (var q in Model.AllQuestions)
+                    {
+                        <tr>
+                            <td class="allq-question">@q.QuestionText</td>
+                            <td class="allq-quiz">
+                                @if (q.QuizDisplayOrder.HasValue && !string.IsNullOrWhiteSpace(q.QuizTitle))
+                                {
+                                    @:M@(q.QuizDisplayOrder): @q.QuizTitle
+                                }
+                                else
+                                {
+                                    @:-
+                                }
+                            </td>
+                            <td><span class="tag @(q.IsMultiSelect ? "te" : "tn2")">@(q.IsMultiSelect ? "Multi" : "Single")</span></td>
+                            <td class="allq-options">@q.Options.Count option@(q.Options.Count != 1 ? "s" : "")</td>
+                            <td class="allq-actions">
+                                <button class="rbtn" onclick="openEditQuestion('@q.QuestionId', '@Model.SelectedLanguage')">Edit</button>
+                                <button class="rbtn danger" onclick="deleteQuestion('@q.QuestionId')">Del</button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@if (Model.ActiveTab == "roles")
+{
+    var usersSearch = Context.Request.Query["search"].ToString();
+    <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+        @{
+            var roleCards = new[] {
+                ("Learner", "#888", "Access to own dashboard and quizzes only."),
+                ("ReportingAdmin", "#185FA5", "Reporting access scoped by assigned access groups."),
+                ("GlobalAdmin", "#C41230", "Full platform access. Manages roles, course content, and user access.")
+            };
+        }
+        @foreach (var (role, color, desc) in roleCards)
+        {
+            <div style="background:#fff;border:1px solid #e8e8e6;border-radius:8px;padding:10px 14px;font-size:12px;color:#555;flex:1;min-width:180px">
+                <div style="font-weight:700;color:@color;margin-bottom:3px">@role</div>
+                @desc
+            </div>
+        }
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="display:flex;gap:10px">
+            <div class="clearable-input" style="width:240px">
+                <input class="fi" id="users-search" type="text" placeholder="Name or email..."
+                       value="@usersSearch"
+                       oninput="toggleUsersSearchClear(); searchUsers()">
+                <button class="clear-input-btn" id="users-search-clear" type="button"
+                        onclick="clearUsersSearch()"
+                        aria-label="Clear user search"
+                        title="Clear user search">x</button>
+            </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+            <span id="roles-count" style="font-size:13px;color:#aaa">@(Model.Users?.Count ?? 0) of @Model.UserTotalCount users</span>
+            <button class="bec" onclick="openBulkMergeModal()">Merge quiz data</button>
+            <button class="bec" id="impersonate-selected-btn" onclick="impersonateSelectedUser()" disabled>Impersonate</button>
+            <button class="bec" onclick="openAddUserModal()">+ Add user</button>
+        </div>
+    </div>
+    <div class="filter-loading" id="admin-filter-loading" hidden style="padding-top:0;margin-bottom:12px">
+        <div class="filter-spinner"></div>
+        <span class="filter-loading-text">Updating results...</span>
+    </div>
+
+    <div class="panel" style="padding:0">
+        <table class="dt">
+            <thead>
+                <tr>
+                    <th style="width:34px"></th>
+                    <th>Name</th><th>Email</th><th>Organization</th><th>Portfolio</th><th>Scoped organizations/portfolios</th>
+                    <th>Role</th><th>Last active</th><th style="width:80px"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (Model.Users != null)
+                {
+                    @foreach (var u in Model.Users)
+                    {
+                        <tr style="@(u.IsActive ? "" : "opacity:0.6")">
+                            <td style="text-align:center">
+                                <input type="radio"
+                                       name="impersonate-user"
+                                       class="impersonate-user-radio"
+                                       value="@u.UserId"
+                                       data-user-id="@u.UserId"
+                                       data-user-name="@u.FullName"
+                                       data-is-active="@u.IsActive.ToString().ToLowerInvariant()"
+                                       data-is-self="@(UserCtx.UserId == u.UserId ? "true" : "false")"
+                                       @((UserCtx.UserId == u.UserId) ? "disabled=\"disabled\"" : "")
+                                       title="@(UserCtx.UserId == u.UserId ? "You cannot impersonate your own account." : "Select this user to impersonate.")"
+                                       onchange="selectImpersonationUser(this)">
+                            </td>
+                            <td><strong>@u.FullName</strong></td>
+                            <td style="font-size:12px;color:#888">@u.Email</td>
+                            <td>@u.Company</td>
+                            <td>@u.Portfolio</td>
+                            <td>@u.ScopedCompaniesAndPortfolios</td>
+                            <td><span class="tag tc">@u.RoleName</span></td>
+                            <td>@(u.LastLoginAt?.ToString("d MMM yyyy") ?? "-")</td>
+                            <td style="white-space:nowrap">
+                                <button class="rbtn" onclick="openEditRoleModalFromButton(this)"
+                                        data-user-id="@u.UserId"
+                                        data-role-code="@u.RoleCode"
+                                        data-full-name="@u.FullName"
+                                        data-email="@u.Email"
+                                        data-company="@u.Company"
+                                        data-portfolio="@u.Portfolio"
+                                        style="margin-right:4px">Edit</button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@if (Model.ActiveTab == "groups")
+{
+    var groupSearch = Context.Request.Query["search"].ToString();
+    var groupOrgSearch = Context.Request.Query["organizationSearch"].ToString();
+    var groupType = Context.Request.Query["type"].ToString();
+    var includeInactive = Context.Request.Query["includeInactive"].ToString();
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:10px;margin-bottom:16px">
+        <div style="background:#fff;border:1px solid #e8e8e6;border-radius:8px;padding:12px 14px">
+            <div style="font-size:12px;color:#777;margin-bottom:4px">Portfolio groups</div>
+            <div style="font-size:22px;font-weight:800;color:#7A5000">@((Model.Groups ?? Array.Empty<AccessGroupListItemDto>()).Count(g => g.GroupTypeCode == "PortfolioGroup"))</div>
+        </div>
+        <div style="background:#fff;border:1px solid #e8e8e6;border-radius:8px;padding:12px 14px">
+            <div style="font-size:12px;color:#777;margin-bottom:4px">Portfolio sub-groups</div>
+            <div style="font-size:22px;font-weight:800;color:#185FA5">@((Model.Groups ?? Array.Empty<AccessGroupListItemDto>()).Count(g => g.GroupTypeCode == "PortfolioSubGroup"))</div>
+        </div>
+        <div style="background:#fff;border:1px solid #e8e8e6;border-radius:8px;padding:12px 14px">
+            <div style="font-size:12px;color:#777;margin-bottom:4px">Assigned users</div>
+            <div style="font-size:22px;font-weight:800;color:#C41230">@((Model.Groups ?? Array.Empty<AccessGroupListItemDto>()).Sum(g => g.AssignedUserCount))</div>
+        </div>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <div class="clearable-input" style="width:280px">
+                <input class="fi" id="groups-search" type="text" placeholder="Group name or ID..."
+                       value="@groupSearch"
+                       oninput="toggleGroupsSearchClear(); searchGroups()">
+                <button class="clear-input-btn" id="groups-search-clear" type="button"
+                        onclick="clearGroupsSearch()"
+                        aria-label="Clear group search"
+                        title="Clear group search">x</button>
+            </div>
+            <div class="clearable-input" style="width:300px">
+                <input class="fi" id="groups-org-search" type="text" placeholder="Organization name or ID..."
+                       value="@groupOrgSearch"
+                       oninput="toggleGroupsOrgSearchClear(); searchGroups()">
+                <button class="clear-input-btn" id="groups-org-search-clear" type="button"
+                        onclick="clearGroupsOrgSearch()"
+                        aria-label="Clear organization search"
+                        title="Clear organization search">x</button>
+            </div>
+            <select class="fi" id="groups-type" style="width:210px" onchange="searchGroups()">
+                <option value="">All group types</option>
+                <option value="PortfolioGroup" selected="@(groupType == "PortfolioGroup" ? "selected" : null)">Portfolio groups</option>
+                <option value="PortfolioSubGroup" selected="@(groupType == "PortfolioSubGroup" ? "selected" : null)">Portfolio sub-groups</option>
+            </select>
+            <label style="display:flex;align-items:center;gap:7px;font-size:13px;color:#555">
+                <input type="checkbox" id="groups-include-inactive" onchange="searchGroups()" @(includeInactive.Equals("false", StringComparison.OrdinalIgnoreCase) ? "" : "checked")>
+                Include inactive
+            </label>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+            <span id="groups-count" style="font-size:13px;color:#aaa">@((Model.Groups?.Count ?? 0)) groups</span>
+            <button class="bec" onclick="reseedGroups()">Reseed system groups</button>
+        </div>
+    </div>
+    <div class="filter-loading" id="admin-filter-loading" hidden style="padding-top:0;margin-bottom:12px">
+        <div class="filter-spinner"></div>
+        <span class="filter-loading-text">Updating results...</span>
+    </div>
+
+    <div class="panel" style="padding:0">
+        <table class="dt">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Parent portfolio</th>
+                    <th>Effective orgs</th>
+                    <th>Assigned users</th>
+                    <th>Status</th>
+                    <th style="width:110px"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (Model.Groups != null)
+                {
+                    @foreach (var group in Model.Groups)
+                    {
+                        <tr>
+                            <td>
+                                <strong>@group.Name</strong>
+                                <div style="font-size:12px;color:#888">
+                                    @(group.OrganizationId.HasValue ? $"Organization {group.OrganizationId}" : group.PortfolioId.HasValue ? $"Portfolio {group.PortfolioId}" : "No source ID")
+                                    @(group.IsSystemManaged ? " · System managed" : "")
+                                </div>
+                            </td>
+                            <td><span class="tag @(group.GroupTypeCode == "PortfolioGroup" ? "te" : "tn2")">@group.GroupTypeName</span></td>
+                            <td>@(group.ParentPortfolioName ?? "-")</td>
+                            <td>@group.EffectiveOrganizationCount</td>
+                            <td>@group.AssignedUserCount</td>
+                            <td><span class="tag @(group.IsActive ? "tc" : "tn2")">@(group.IsActive ? "Active" : "Inactive")</span></td>
+                            <td>
+                                <button class="rbtn" data-group-id="@group.AccessGroupId" onclick="openGroupDetailFromButton(this)">View</button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@section Scripts {
+<script>
+const TOKEN = document.querySelector('[name="__RequestVerificationToken"]')?.value ?? '';
+const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
+const SELECTED_QUIZ = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.SelectedQuiz, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+const ACCESS_GROUP_OPTIONS = @Html.Raw(System.Text.Json.JsonSerializer.Serialize((Model.Groups ?? Array.Empty<AccessGroupListItemDto>()).Where(g => g.IsActive).ToList(), new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+const QUIZ_LINK_LANGUAGES = [
+    ['en', 'EN'],
+    ['de', 'DE'],
+    ['es', 'ES'],
+    ['fr', 'FR'],
+    ['pt', 'PT']
+];
+let selectedImpersonationUser = null;
+
+function openAddQuizModal() {
+    openModal(`
+        <h3 style="font-size:16px;font-weight:700;margin-bottom:16px">Add quiz</h3>
+        <div class="fg" style="margin-bottom:20px">
+            <label class="fl2">Title</label>
+            <input class="fi" id="new-quiz-title" placeholder="Quiz title" style="width:100%;margin-top:4px">
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+            <button class="bex" onclick="closeModal()">Cancel</button>
+            <button class="bec" onclick="saveNewQuiz()">Add quiz</button>
+        </div>`);
+}
+
+async function saveNewQuiz() {
+    const title = document.getElementById('new-quiz-title').value.trim();
+    if (!title) { alert('Title is required.'); return; }
+    const resp = await fetch('/admin/cms/quiz/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body: JSON.stringify({ title })
+    });
+    if (resp.ok) { closeModal(); location.reload(); }
+    else alert('Failed to add quiz.');
+}
+
+function openEditQuizModalFromButton(button) {
+    openEditQuizModal(button.dataset.quizId, button.dataset.quizTitle, SELECTED_QUIZ);
+}
+
+function openCopyQuizLinkModalFromButton(button) {
+    openCopyQuizLinkModal(button.dataset.quizId, button.dataset.quizTitle, button.dataset.quizPublished === 'true');
+}
+
+function openCopyQuizLinkModal(quizId, title, isPublished = true) {
+    openModal(`
+        <h3 style="font-size:16px;font-weight:700;margin-bottom:10px">Copy quiz link</h3>
+        <div style="font-size:13px;color:#555;margin-bottom:16px">${escHtml(title)}</div>
+        ${isPublished ? '' : '<div class="draft-copy-note">Draft links are only available to Super Admin users until the quiz is published.</div>'}
+        <div class="copy-link-list">
+            ${QUIZ_LINK_LANGUAGES.map(([code, label]) => {
+                const url = learnerQuizUrl(quizId, code);
+                return `
+                    <div class="copy-link-row">
+                        <span class="admin-lang-chip ${code === 'en' ? 'on' : ''}">${label}</span>
+                        <input class="fi copy-link-input" value="${escAttr(url)}" readonly>
+                        <button class="rbtn" onclick="copyQuizLink('${quizId}', '${code}', this)">Copy quiz link</button>
+                    </div>`;
+            }).join('')}
+        </div>
+        <div id="copy-link-status" class="copy-link-status"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px">
+            <button class="bex" onclick="closeModal()">Close</button>
+        </div>`);
+}
+
+function learnerQuizUrl(quizId, lang) {
+    return new URL(`/learner/quiz/open/${quizId}?lang=${encodeURIComponent(lang)}`, window.location.origin).toString();
+}
+
+async function copyQuizLink(quizId, lang, button) {
+    const url = learnerQuizUrl(quizId, lang);
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(url);
+        } else {
+            const input = document.createElement('textarea');
+            input.value = url;
+            input.style.position = 'fixed';
+            input.style.opacity = '0';
+            document.body.appendChild(input);
+            input.select();
+            document.execCommand('copy');
+            input.remove();
+        }
+        document.getElementById('copy-link-status').textContent = `Copied ${lang.toUpperCase()} quiz link.`;
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = 'Copy quiz link'; }, 1200);
+    } catch {
+        document.getElementById('copy-link-status').textContent = 'Copy failed. Select the link and copy it manually.';
+    }
+}
+
+function publishQuizFromButton(button) {
+    publishQuiz(button.dataset.quizId, button.dataset.quizTitle);
+}
+
+async function publishQuiz(quizId, title) {
+    if (!confirm(`Publish "${title}"?\n\nDraft test attempts for this quiz will be removed and the quiz will become visible to learners.`)) return;
+
+    const resp = await fetch(`/admin/cms/quiz/${quizId}/publish`, {
+        method: 'PUT',
+        headers: { 'RequestVerificationToken': TOKEN }
+    });
+
+    if (resp.ok) {
+        location.reload();
+        return;
+    }
+
+    let error = 'Failed to publish quiz.';
+    try {
+        const body = await resp.json();
+        error = body.error || error;
+    } catch {}
+    alert(error);
+}
+
+function openSelectedQuizEditor() {
+    if (!SELECTED_QUIZ) { closeModal(); return; }
+    openEditQuizModal(SELECTED_QUIZ.quizId, SELECTED_QUIZ.title, SELECTED_QUIZ);
+}
+
+function openEditQuizModal(quizId, title, quiz = null) {
+    const questions = quiz?.questions ?? [];
+    openModal(`
+        <div class="quiz-edit-modal">
+        <h3 style="font-size:16px;font-weight:700;margin-bottom:16px">Edit quiz</h3>
+        <div class="fg" style="margin-bottom:14px">
+            <label class="fl2">Title</label>
+            <input class="fi" id="edit-quiz-title" value="${escAttr(title)}" style="width:100%;margin-top:4px">
+        </div>
+        <div class="quiz-edit-toolbar">
+            <div style="font-size:12px;color:#888">${questions.length} question${questions.length === 1 ? '' : 's'}</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="bex" onclick="openAddQuestionModal('${quizId}')">+ Add question</button>
+                <button class="bec" onclick="saveQuiz('${quizId}')">Save quiz title</button>
+            </div>
+        </div>
+        <div class="quiz-edit-list">
+            ${questions.length > 0 ? questions.map((q, i) => quizEditorQuestionHtml(q, i, quiz?.selectedLanguage ?? '')).join('') : '<div class="quiz-edit-empty">No questions have been added yet.</div>'}
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px">
+            <button class="bex" onclick="closeModal()">Close</button>
+        </div>
+        </div>`);
+}
+
+async function saveQuiz(quizId) {
+    const title = document.getElementById('edit-quiz-title').value.trim();
+    if (!title) { alert('Title is required.'); return; }
+    const resp = await fetch(`/admin/cms/quiz/${quizId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body: JSON.stringify({ title })
+    });
+    if (resp.ok) { closeModal(); location.reload(); }
+    else alert('Failed to update quiz.');
+}
+
+function openAddQuestionModal(quizId) {
+    openModal(questionFormHtml(null, quizId));
+}
+
+async function openEditQuestion(questionId, lang = '') {
+    const query = lang ? `?lang=${encodeURIComponent(lang)}` : '';
+    const resp = await fetch(`/admin/cms/question/${questionId}${query}`, { headers: { Accept: 'application/json' } });
+    if (!resp.ok) { alert('Failed to load question.'); return; }
+    const q = await resp.json();
+    openModal(questionFormHtml(q, null));
+}
+
+function quizEditorQuestionHtml(q, index, lang) {
+    const options = q.options ?? [];
+    return `
+        <section class="quiz-edit-question">
+            <div class="quiz-edit-question-head">
+                <div>
+                    <div class="quiz-edit-label">Question ${index + 1}</div>
+                    <div class="quiz-edit-question-text">${escHtml(q.questionText)}</div>
+                </div>
+                <div class="quiz-edit-actions">
+                    <span class="tag ${q.isMultiSelect ? 'te' : 'tn2'}">${q.isMultiSelect ? 'Multi' : 'Single'}</span>
+                    <button class="rbtn" onclick="openEditQuestion('${q.questionId}', '${lang}')">Edit</button>
+                    <button class="rbtn danger" onclick="deleteQuestion('${q.questionId}')">Delete</button>
+                </div>
+            </div>
+            <div class="quiz-edit-answer-list">
+                ${options.length > 0 ? options.map((o, oi) => quizEditorAnswerHtml(q.questionId, o, oi, lang)).join('') : '<div class="quiz-edit-empty">No answers yet.</div>'}
+            </div>
+            <div class="quiz-edit-answer-actions">
+                <button class="rbtn" onclick="openAnswerModal('${q.questionId}', '', '${lang}')">+ Add answer</button>
+            </div>
+        </section>`;
+}
+
+function quizEditorAnswerHtml(questionId, option, index, lang) {
+    return `
+        <div class="quiz-edit-answer ${option.isCorrect ? 'is-correct' : ''}">
+            <div class="quiz-edit-letter">${String.fromCharCode(65 + index)}</div>
+            <div class="quiz-edit-answer-text">${escHtml(option.optionText)}</div>
+            ${option.isCorrect ? '<span class="tag tc">Correct</span>' : ''}
+            <div class="quiz-edit-answer-buttons">
+                <button class="rbtn" onclick="openAnswerModal('${questionId}', '${option.optionId}', '${lang}')">Edit</button>
+                <button class="rbtn danger" onclick="deleteAnswer('${questionId}', '${option.optionId}', '${lang}')">Delete</button>
+            </div>
+        </div>`;
+}
+
+async function loadQuestion(questionId, lang = '') {
+    const query = lang ? `?lang=${encodeURIComponent(lang)}` : '';
+    const resp = await fetch(`/admin/cms/question/${questionId}${query}`, { headers: { Accept: 'application/json' } });
+    if (!resp.ok) throw new Error('Failed to load question.');
+    return await resp.json();
+}
+
+function openAnswerModal(questionId, optionId = '', lang = '') {
+    loadQuestion(questionId, lang)
+        .then(q => {
+            const option = optionId ? q.options.find(o => o.optionId === optionId) : null;
+            const isNew = !option;
+            openModal(`
+                <h3 style="font-size:16px;font-weight:700;margin-bottom:16px">${isNew ? 'Add' : 'Edit'} answer</h3>
+                <div class="fg" style="margin-bottom:14px">
+                    <label class="fl2">Answer text</label>
+                    <textarea class="fi" id="answer-text" rows="3" style="width:100%;margin-top:4px">${escHtml(option?.optionText ?? '')}</textarea>
+                </div>
+                <label style="display:flex;gap:8px;align-items:center;margin-bottom:20px;font-size:13px">
+                    <input type="checkbox" id="answer-correct" ${option?.isCorrect ? 'checked' : ''}> Correct answer
+                </label>
+                <div style="display:flex;gap:10px;justify-content:flex-end">
+                    <button class="bex" onclick="openSelectedQuizEditor()">Back to quiz</button>
+                    <button class="bec" onclick="saveAnswer('${questionId}', '${optionId}', '${lang}')">Save answer</button>
+                </div>`);
+        })
+        .catch(() => alert('Failed to load answer.'));
+}
+
+async function saveAnswer(questionId, optionId = '', lang = '') {
+    try {
+        const q = await loadQuestion(questionId, lang);
+        const text = document.getElementById('answer-text').value.trim();
+        const isCorrect = document.getElementById('answer-correct').checked;
+        if (!text) { alert('Answer text is required.'); return; }
+
+        const options = [...(q.options ?? [])];
+        const idx = optionId ? options.findIndex(o => o.optionId === optionId) : -1;
+        if (idx >= 0) {
+            options[idx] = { ...options[idx], optionText: text, isCorrect };
+        } else {
+            options.push({
+                optionId: EMPTY_GUID,
+                displayOrder: options.length + 1,
+                optionText: text,
+                isCorrect
+            });
+        }
+
+        await saveQuestionPayload({ ...q, options });
+        location.reload();
+    } catch {
+        alert('Failed to save answer.');
+    }
+}
+
+async function deleteAnswer(questionId, optionId, lang = '') {
+    if (!confirm('Delete this answer?')) return;
+    try {
+        const q = await loadQuestion(questionId, lang);
+        const options = (q.options ?? [])
+            .filter(o => o.optionId !== optionId)
+            .map((o, i) => ({ ...o, displayOrder: i + 1 }));
+        await saveQuestionPayload({ ...q, options });
+        location.reload();
+    } catch {
+        alert('Failed to delete answer.');
+    }
+}
+
+function questionFormHtml(q, quizId) {
+    return `
+        <h3 style="font-size:16px;font-weight:700;margin-bottom:16px">${q ? 'Edit' : 'Add'} question</h3>
+        <div class="fg" style="margin-bottom:14px">
+            <label class="fl2">Question text</label>
+            <textarea class="fi" id="q-text" rows="3" style="width:100%;margin-top:4px">${escHtml(q?.questionText ?? '')}</textarea>
+        </div>
+        <label style="display:flex;gap:8px;align-items:center;margin-bottom:20px;font-size:13px">
+            <input type="checkbox" id="q-multi" ${q?.isMultiSelect ? 'checked' : ''}> Multi-select
+        </label>
+        <div id="q-options" style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px">
+            ${(q?.options ?? [{ optionId: EMPTY_GUID, optionText: '', isCorrect: false, displayOrder: 1 }, { optionId: EMPTY_GUID, optionText: '', isCorrect: false, displayOrder: 2 }]).map((o, i) => `
+            <div data-option-id="${o.optionId ?? EMPTY_GUID}" style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" ${o.isCorrect ? 'checked' : ''} class="opt-correct" title="Mark correct">
+                <input class="fi" type="text" placeholder="Option ${String.fromCharCode(65 + i)}" value="${escAttr(o.optionText ?? '')}" style="flex:1">
+                <button onclick="this.parentElement.remove()" style="background:none;border:none;color:#aaa;cursor:pointer;font-size:16px">x</button>
+            </div>`).join('')}
+        </div>
+        <button class="bex" onclick="addOptionRow()" style="margin-bottom:20px">+ Add option</button>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+            <button class="bex" onclick="closeModal()">Cancel</button>
+            <button class="bec" onclick="saveQuestion('${q?.questionId ?? ''}', '${quizId ?? ''}', '${q?.languageCode ?? ''}')">Save</button>
+        </div>`;
+}
+
+function addOptionRow() {
+    const container = document.getElementById('q-options');
+    const i = container.children.length;
+    const div = document.createElement('div');
+    div.dataset.optionId = EMPTY_GUID;
+    div.style = 'display:flex;align-items:center;gap:8px';
+    div.innerHTML = `<input type="checkbox" class="opt-correct"><input class="fi" type="text" placeholder="Option ${String.fromCharCode(65 + i)}" style="flex:1"><button onclick="this.parentElement.remove()" style="background:none;border:none;color:#aaa;cursor:pointer;font-size:16px">x</button>`;
+    container.appendChild(div);
+}
+
+async function saveQuestion(questionId, quizId, languageCode = '') {
+    const text = document.getElementById('q-text').value.trim();
+    const isMulti = document.getElementById('q-multi').checked;
+    const optRows = document.querySelectorAll('#q-options > div');
+    const options = Array.from(optRows).map((row, i) => ({
+        optionId: row.dataset.optionId || EMPTY_GUID,
+        displayOrder: i + 1,
+        optionText: row.querySelectorAll('input')[1].value,
+        isCorrect: row.querySelector('input[type=checkbox]').checked
+    }));
+
+    const isEdit = !!questionId;
+    const dto = { questionId: questionId || EMPTY_GUID, displayOrder: 0, questionText: text, isMultiSelect: isMulti, isActive: true, options, languageCode };
+    if (!isEdit) {
+        dto.quizId = quizId;
+    }
+    const url = isEdit ? `/admin/cms/question/${questionId}` : '/admin/cms/question/add';
+    const body = isEdit ? JSON.stringify(dto) : JSON.stringify({ quizId, question: dto });
+    const method = isEdit ? 'PUT' : 'POST';
+
+    const resp = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body
+    });
+    if (resp.ok) { closeModal(); location.reload(); }
+    else alert(await responseErrorMessage(resp, 'Failed to save question.'));
+}
+
+async function saveQuestionPayload(dto) {
+    const resp = await fetch(`/admin/cms/question/${dto.questionId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body: JSON.stringify(dto)
+    });
+    if (!resp.ok) throw new Error('Failed to save question.');
+}
+
+async function deleteQuestion(questionId) {
+    if (!confirm('Delete this question?')) return;
+    const resp = await fetch(`/admin/cms/question/${questionId}`, {
+        method: 'DELETE',
+        headers: { 'RequestVerificationToken': TOKEN }
+    });
+    if (resp.ok) location.reload();
+    else alert('Failed to delete question.');
+}
+
+async function openAddUserModal() {
+    let companies = [];
+    try {
+        const resp = await fetch('/admin/lookups/organization-companies', { headers: { Accept: 'application/json' } });
+        if (resp.ok) companies = await resp.json();
+    } catch {
+        companies = [];
+    }
+
+    openModal(`
+        <h3 style="font-size:16px;font-weight:700;margin-bottom:16px">Add user</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+            <div class="fg"><label class="fl2">First name</label><input class="fi" id="u-first" style="width:100%;margin-top:4px"></div>
+            <div class="fg"><label class="fl2">Last name</label><input class="fi" id="u-last" style="width:100%;margin-top:4px"></div>
+        </div>
+        <div class="fg" style="margin-bottom:14px">
+            <label class="fl2">Email</label>
+            <input class="fi" id="u-email" type="email" style="width:100%;margin-top:4px">
+        </div>
+        <div class="fg" style="margin-bottom:14px">
+            <label class="fl2">Employee ID</label>
+            <input class="fi" id="u-employee-id" style="width:100%;margin-top:4px">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+            <div class="fg"><label class="fl2">Organization</label>
+                <select class="fi" id="u-company" style="width:100%;margin-top:4px" onchange="updateAddUserPortfolioLabel()">
+                    <option value="">Select organization...</option>
+                    ${companies.map(c => `<option value="${Number(c.organizationId)}"
+                        data-name="${escAttr(c.organizationName)}"
+                        data-portfolio-id="${c.portfolioId ?? ''}"
+                        data-portfolio-name="${escAttr(c.portfolioName ?? '')}">
+                        ${escHtml(c.organizationName)} (${Number(c.organizationId)})
+                    </option>`).join('')}
+                </select>
+            </div>
+            <div class="fg"><label class="fl2">Portfolio</label>
+                <div id="u-portfolio-label" style="width:100%;margin-top:4px;min-height:36px;border:1px solid #ddd;border-radius:6px;padding:9px 10px;background:#f8f8f6;color:#555;font-size:13px">
+                    Select an organization to view portfolio
+                </div>
+            </div>
+        </div>
+        <div class="fg" style="margin-bottom:24px">
+            <label class="fl2">Role</label>
+            <select class="fi" id="u-role" style="width:100%;margin-top:4px">
+                <option value="Learner" selected>Learner</option>
+                <option value="ReportingAdmin">Reporting Admin</option>
+                <option value="GlobalAdmin">Super Admin</option>
+            </select>
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+            <button class="bex" onclick="closeModal()">Cancel</button>
+            <button class="bec" onclick="saveNewUser()">Add user</button>
+        </div>`);
+}
+
+async function saveNewUser() {
+    const companySelect = document.getElementById('u-company');
+    const selectedCompanyOption = companySelect?.selectedOptions?.[0];
+    const body = {
+        firstName: document.getElementById('u-first').value.trim(),
+        lastName: document.getElementById('u-last').value.trim(),
+        email: document.getElementById('u-email').value.trim(),
+        employeeId: document.getElementById('u-employee-id').value.trim(),
+        company: selectedCompanyOption?.dataset?.name ?? '',
+        organizationId: companySelect?.value ? Number(companySelect.value) : null,
+        portfolio: selectedCompanyOption?.dataset?.portfolioName ?? '',
+        portfolioId: selectedCompanyOption?.dataset?.portfolioId ? Number(selectedCompanyOption.dataset.portfolioId) : null,
+        roleCode: document.getElementById('u-role').value
+    };
+    if (!body.firstName || !body.lastName || !body.email || !body.employeeId || !body.organizationId) {
+        alert('First name, last name, email, Employee ID, and Organization are required.');
+        return;
+    }
+    const resp = await fetch('/admin/users/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body: JSON.stringify(body)
+    });
+    if (resp.ok) { closeModal(); location.reload(); }
+    else { alert(await responseErrorMessage(resp, 'Failed to add user.')); }
+}
+
+function updateAddUserPortfolioLabel() {
+    const companySelect = document.getElementById('u-company');
+    const selected = companySelect?.selectedOptions?.[0];
+    const label = document.getElementById('u-portfolio-label');
+    if (!label) return;
+
+    const portfolioName = selected?.dataset?.portfolioName ?? '';
+    const portfolioId = selected?.dataset?.portfolioId ?? '';
+    label.textContent = portfolioName && portfolioId
+        ? `${portfolioName} (${portfolioId})`
+        : 'No portfolio found for selected organization';
+}
+
+function selectImpersonationUser(radio) {
+    if (!radio) return;
+
+    selectedImpersonationUser = {
+        userId: radio.dataset.userId,
+        userName: radio.dataset.userName || 'this user',
+        isActive: radio.dataset.isActive === 'true'
+    };
+    updateImpersonationButtonState();
+}
+
+function resetImpersonationSelection() {
+    selectedImpersonationUser = null;
+    document.querySelectorAll('input[name="impersonate-user"]').forEach(radio => {
+        radio.checked = false;
+    });
+    updateImpersonationButtonState();
+}
+
+function updateImpersonationButtonState() {
+    const button = document.getElementById('impersonate-selected-btn');
+    if (!button) return;
+
+    const selected = selectedImpersonationUser;
+    const canImpersonate = !!selected?.userId && selected.isActive;
+    button.disabled = !canImpersonate;
+    button.title = canImpersonate
+        ? `Impersonate ${selected.userName}`
+        : selected?.userId
+            ? 'Select an active user to impersonate.'
+            : 'Select a user to impersonate.';
+}
+
+async function impersonateSelectedUser() {
+    if (!selectedImpersonationUser?.userId) {
+        alert('Select a user first.');
+        return;
+    }
+
+    if (!selectedImpersonationUser.isActive) {
+        alert('Only active users can be impersonated.');
+        return;
+    }
+
+    const button = document.getElementById('impersonate-selected-btn');
+    if (button?.dataset.busy === 'true')
+        return;
+
+    const userName = selectedImpersonationUser.userName || 'this user';
+    if (!confirm(`Impersonate ${userName}?\n\nYou will switch into that user's session until you stop impersonation.`)) return;
+
+    if (button)
+        button.dataset.busy = 'true';
+
+    try {
+        const form = new FormData();
+        form.append('returnUrl', `${window.location.pathname}${window.location.search}`);
+
+        const resp = await fetch(`/impersonation/start/${selectedImpersonationUser.userId}`, {
+            method: 'POST',
+            headers: { 'RequestVerificationToken': TOKEN },
+            body: form
+        });
+
+        if (!resp.ok) {
+            alert(await responseErrorMessage(resp, 'Failed to start impersonation.'));
+            return;
+        }
+
+        const payload = await resp.json();
+        window.location.href = payload.redirectUrl || '/';
+    } finally {
+        if (button)
+            button.dataset.busy = 'false';
+    }
+}
+
+function openBulkMergeModal() {
+    window._mergeUsersState = {
+        sourceUsers: [],
+        targetUser: null,
+        sourceResults: [],
+        targetResults: [],
+        sourceSearchTerm: '',
+        targetSearchTerm: '',
+        preview: null,
+        isSearchingSources: false,
+        isSearchingTarget: false,
+        isPreviewLoading: false,
+        isExecuteLoading: false
+    };
+
+    openModal(`
+        <div class="access-edit-modal" style="max-width:960px">
+            <div class="access-edit-header">
+                <div>
+                    <h3 class="access-edit-title">Merge quiz data</h3>
+                    <div class="access-edit-subtitle">Select one or more duplicate source users and one target user. Quiz attempts will move to the target user and the source users will be deactivated.</div>
+                </div>
+                <button type="button" class="modal-close-btn" onclick="closeModal()" aria-label="Close dialog">x</button>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start">
+                <section style="border:1px solid #eceae4;border-radius:12px;padding:16px;background:#fffaf7">
+                    <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#8a5a00;margin-bottom:6px">Source users</div>
+                    <div style="font-size:13px;color:#666;margin-bottom:12px">Choose one or more duplicate users, typically records with Employee ID 0.</div>
+                    <input class="fi" id="merge-source-search" type="text" placeholder="Search name or email..." style="width:100%" oninput="searchMergeCandidates('source')">
+                    <div id="merge-source-selected" style="margin-top:12px"></div>
+                    <div id="merge-source-results" style="margin-top:12px;max-height:260px;overflow:auto;border-top:1px solid #f0ede7;padding-top:12px"></div>
+                </section>
+                <section style="border:1px solid #eceae4;border-radius:12px;padding:16px;background:#f8fbff">
+                    <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#185fa5;margin-bottom:6px">Target user</div>
+                    <div style="font-size:13px;color:#666;margin-bottom:12px">Choose the one user who should keep the merged quiz history.</div>
+                    <input class="fi" id="merge-target-search" type="text" placeholder="Search name or email..." style="width:100%" oninput="searchMergeCandidates('target')">
+                    <div id="merge-target-selected" style="margin-top:12px"></div>
+                    <div id="merge-target-results" style="margin-top:12px;max-height:260px;overflow:auto;border-top:1px solid #f0ede7;padding-top:12px"></div>
+                </section>
+            </div>
+            <section style="margin-top:18px;border:1px solid #eceae4;border-radius:12px;padding:16px;background:#fcfcfb">
+                <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+                    <div>
+                        <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#777">Preview</div>
+                        <div style="font-size:13px;color:#666">Review what will move before running the merge.</div>
+                    </div>
+                    <button class="rbtn" id="merge-preview-btn" onclick="previewBulkMerge()">Preview merge</button>
+                </div>
+                <div id="merge-preview-panel"></div>
+            </section>
+            <div class="access-edit-footer" style="margin-top:18px">
+                <button class="bex" onclick="closeModal()">Cancel</button>
+                <button class="bec" id="merge-execute-btn" onclick="executeBulkMerge()" disabled>Merge selected users</button>
+            </div>
+        </div>`);
+
+    renderBulkMergeModal();
+}
+
+function getMergeState() {
+    if (!window._mergeUsersState) {
+        window._mergeUsersState = {
+            sourceUsers: [],
+            targetUser: null,
+            sourceResults: [],
+            targetResults: [],
+            sourceSearchTerm: '',
+            targetSearchTerm: '',
+            preview: null,
+            isSearchingSources: false,
+            isSearchingTarget: false,
+            isPreviewLoading: false,
+            isExecuteLoading: false
+        };
+    }
+    return window._mergeUsersState;
+}
+
+function renderBulkMergeModal() {
+    const state = getMergeState();
+    const sourceSearch = document.getElementById('merge-source-search');
+    const targetSearch = document.getElementById('merge-target-search');
+    if (sourceSearch && sourceSearch.value !== state.sourceSearchTerm) sourceSearch.value = state.sourceSearchTerm;
+    if (targetSearch && targetSearch.value !== state.targetSearchTerm) targetSearch.value = state.targetSearchTerm;
+
+    const sourceSelected = document.getElementById('merge-source-selected');
+    const sourceResults = document.getElementById('merge-source-results');
+    const targetSelected = document.getElementById('merge-target-selected');
+    const targetResults = document.getElementById('merge-target-results');
+    const previewPanel = document.getElementById('merge-preview-panel');
+    const previewBtn = document.getElementById('merge-preview-btn');
+    const executeBtn = document.getElementById('merge-execute-btn');
+
+    if (sourceSelected) {
+        sourceSelected.innerHTML = state.sourceUsers.length
+            ? `<div style="display:flex;flex-wrap:wrap;gap:8px">${state.sourceUsers.map(user => mergeUserChip(user, true)).join('')}</div>`
+            : '<div style="font-size:13px;color:#888">No source users selected yet.</div>';
+    }
+
+    if (targetSelected) {
+        targetSelected.innerHTML = state.targetUser
+            ? mergeUserCard(state.targetUser, { actionText: 'Clear target', action: 'clearTargetUser()' })
+            : '<div style="font-size:13px;color:#888">No target user selected yet.</div>';
+    }
+
+    if (sourceResults) {
+        sourceResults.innerHTML = renderMergeResults(
+            state.isSearchingSources,
+            state.sourceResults,
+            'Add source',
+            'addSourceUser',
+            state.sourceUsers.map(user => user.userId),
+            state.targetUser ? [state.targetUser.userId] : []);
+    }
+
+    if (targetResults) {
+        targetResults.innerHTML = renderMergeResults(
+            state.isSearchingTarget,
+            state.targetResults,
+            'Choose target',
+            'setTargetUser',
+            state.targetUser ? [state.targetUser.userId] : [],
+            state.sourceUsers.map(user => user.userId));
+    }
+
+    if (previewPanel) {
+        previewPanel.innerHTML = renderMergePreview(state);
+    }
+
+    if (previewBtn) {
+        previewBtn.disabled = state.isPreviewLoading || state.sourceUsers.length === 0 || !state.targetUser;
+        previewBtn.textContent = state.isPreviewLoading ? 'Loading preview...' : 'Preview merge';
+    }
+
+    if (executeBtn) {
+        executeBtn.disabled = state.isExecuteLoading || !state.preview?.canMerge;
+        executeBtn.textContent = state.isExecuteLoading ? 'Merging...' : 'Merge selected users';
+    }
+}
+
+function renderMergeResults(isLoading, results, actionText, actionName, selectedIds, excludedIds) {
+    if (isLoading) {
+        return '<div style="font-size:13px;color:#888">Searching users...</div>';
+    }
+
+    const blocked = new Set([...(selectedIds ?? []), ...(excludedIds ?? [])]);
+    const visible = (results ?? []).filter(user => !blocked.has(user.userId));
+    if (!visible.length) {
+        return '<div style="font-size:13px;color:#888">No matching users.</div>';
+    }
+
+    return visible.map(user => mergeUserCard(user, {
+        actionText,
+        action: `${actionName}('${user.userId}')`
+    })).join('');
+}
+
+function renderMergePreview(state) {
+    if (state.isPreviewLoading) {
+        return '<div style="font-size:13px;color:#888">Loading preview...</div>';
+    }
+
+    if (!state.preview) {
+        return '<div style="font-size:13px;color:#888">Select source and target users, then preview the merge.</div>';
+    }
+
+    const preview = state.preview;
+    const stats = preview.statistics ?? {};
+    const warnings = preview.warnings ?? [];
+    const warningHtml = warnings.length
+        ? `<div style="display:grid;gap:8px;margin-bottom:14px">${warnings.map(warning => `<div style="padding:10px 12px;border-radius:10px;background:#fff4f4;border:1px solid #f1d6d6;color:#8b2a2a;font-size:13px">${escHtml(warning)}</div>`).join('')}</div>`
+        : '<div style="padding:10px 12px;border-radius:10px;background:#f3fbf5;border:1px solid #d7eadc;color:#1f6a33;font-size:13px;margin-bottom:14px">No blocking issues were found for this merge.</div>';
+
+    return `
+        ${warningHtml}
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+            ${mergeStatCard('Source users', String(preview.sources?.length ?? 0))}
+            ${mergeStatCard('Quiz attempts to move', String(stats.quizAttemptsToMove ?? 0))}
+            ${mergeStatCard('Source completions', String(stats.sourceCompletionRecordCount ?? 0))}
+            ${mergeStatCard('Target completion', stats.targetWillBeComplete ? 'Complete' : (stats.targetHasCompletionRecord ? 'Already complete' : 'Not complete'))}
+        </div>
+        <div style="font-size:12px;color:#777;margin-top:14px">${preview.canMerge ? 'This merge is ready to run.' : 'Resolve the warnings above before running the merge.'}</div>`;
+}
+
+function mergeStatCard(label, value) {
+    return `
+        <div style="border:1px solid #eceae4;border-radius:10px;padding:12px;background:#fff">
+            <div style="font-size:12px;color:#777;margin-bottom:6px">${escHtml(label)}</div>
+            <div style="font-size:24px;font-weight:700;color:#1a1a1a">${escHtml(value)}</div>
+        </div>`;
+}
+
+function mergeUserChip(user, removable) {
+    return `
+        <span class="tag tc" style="display:inline-flex;align-items:center;gap:8px;padding-right:${removable ? '6px' : '10px'}">
+            ${escHtml(user.fullName)}${user.employeeId ? ` (${escHtml(user.employeeId)})` : ''}
+            ${removable ? `<button type="button" onclick="removeSourceUser('${user.userId}')" style="border:0;background:transparent;color:inherit;cursor:pointer;font-weight:700;line-height:1">x</button>` : ''}
+        </span>`;
+}
+
+function mergeUserCard(user, options) {
+    const employeeLabel = user.employeeId && user.employeeId !== '0' ? user.employeeId : '0';
+    return `
+        <div style="display:flex;justify-content:space-between;gap:12px;border:1px solid #eceae4;border-radius:10px;padding:12px;background:#fff;margin-bottom:10px">
+            <div style="min-width:0">
+                <div style="font-size:14px;font-weight:700;color:#1a1a1a">${escHtml(user.fullName || 'Unknown user')}</div>
+                <div style="font-size:12px;color:#666;margin-top:3px">${escHtml(user.email || '')}</div>
+                <div style="font-size:12px;color:#888;margin-top:6px">Employee ID: ${escHtml(employeeLabel)} | ${escHtml(user.company || '-')} | ${escHtml(user.portfolio || '-')}</div>
+                <div style="font-size:12px;color:#888;margin-top:2px">${escHtml(user.roleName || user.roleCode || '')}${user.organizationId ? ` | Org ${escHtml(String(user.organizationId))}` : ''}${user.portfolioId ? ` | Portfolio ${escHtml(String(user.portfolioId))}` : ''}</div>
+            </div>
+            <div style="display:flex;align-items:start;gap:8px;flex-shrink:0">
+                ${user.employeeId === '0' || !user.employeeId ? '<span class="tag draft">Employee ID 0</span>' : '<span class="tag tc">Employee ID set</span>'}
+                ${options?.actionText ? `<button class="rbtn" type="button" onclick="${options.action}">${escHtml(options.actionText)}</button>` : ''}
+            </div>
+        </div>`;
+}
+
+function searchMergeCandidates(kind) {
+    const state = getMergeState();
+    const input = document.getElementById(kind === 'source' ? 'merge-source-search' : 'merge-target-search');
+    const term = input?.value ?? '';
+    const normalizedTerm = term.trim();
+
+    if (kind === 'source') {
+        state.sourceSearchTerm = term;
+        state.preview = null;
+    } else {
+        state.targetSearchTerm = term;
+        state.preview = null;
+    }
+
+    const timerKey = kind === 'source' ? '_mergeSourceTimer' : '_mergeTargetTimer';
+    clearTimeout(window[timerKey]);
+
+    if (!normalizedTerm) {
+        if (kind === 'source') state.sourceResults = [];
+        else state.targetResults = [];
+        renderBulkMergeModal();
+        return;
+    }
+
+    if (kind === 'source') state.isSearchingSources = true;
+    else state.isSearchingTarget = true;
+    renderBulkMergeModal();
+
+    window[timerKey] = setTimeout(async () => {
+        const resp = await fetch(`/admin/users/merge/candidates?term=${encodeURIComponent(term)}`, {
+            headers: { Accept: 'application/json' }
+        });
+
+        if (!resp.ok) {
+            alert(await responseErrorMessage(resp, 'Failed to search users.'));
+            if (kind === 'source') state.isSearchingSources = false;
+            else state.isSearchingTarget = false;
+            renderBulkMergeModal();
+            return;
+        }
+
+        const results = await resp.json();
+        if (kind === 'source') {
+            state.sourceResults = results;
+            state.isSearchingSources = false;
+        } else {
+            state.targetResults = results;
+            state.isSearchingTarget = false;
+        }
+        renderBulkMergeModal();
+    }, 250);
+}
+
+function addSourceUser(userId) {
+    const state = getMergeState();
+    const user = (state.sourceResults ?? []).find(candidate => candidate.userId === userId);
+    if (!user || (state.sourceUsers ?? []).some(candidate => candidate.userId === userId))
+        return;
+
+    state.sourceUsers.push(user);
+    state.preview = null;
+    renderBulkMergeModal();
+}
+
+function removeSourceUser(userId) {
+    const state = getMergeState();
+    state.sourceUsers = (state.sourceUsers ?? []).filter(user => user.userId !== userId);
+    state.preview = null;
+    renderBulkMergeModal();
+}
+
+function setTargetUser(userId) {
+    const state = getMergeState();
+    const user = (state.targetResults ?? []).find(candidate => candidate.userId === userId);
+    if (!user)
+        return;
+
+    state.targetUser = user;
+    state.preview = null;
+    renderBulkMergeModal();
+}
+
+function clearTargetUser() {
+    const state = getMergeState();
+    state.targetUser = null;
+    state.preview = null;
+    renderBulkMergeModal();
+}
+
+async function previewBulkMerge() {
+    const state = getMergeState();
+    if (!state.sourceUsers.length || !state.targetUser) {
+        alert('Select at least one source user and one target user.');
+        return;
+    }
+
+    state.isPreviewLoading = true;
+    state.preview = null;
+    renderBulkMergeModal();
+
+    const body = {
+        sourceUserIds: state.sourceUsers.map(user => user.userId),
+        targetUserId: state.targetUser.userId
+    };
+
+    const resp = await fetch('/admin/users/merge/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body: JSON.stringify(body)
+    });
+
+    state.isPreviewLoading = false;
+    if (!resp.ok) {
+        renderBulkMergeModal();
+        alert(await responseErrorMessage(resp, 'Failed to preview merge.'));
+        return;
+    }
+
+    state.preview = await resp.json();
+    renderBulkMergeModal();
+}
+
+async function executeBulkMerge() {
+    const state = getMergeState();
+    if (!state.preview?.canMerge || !state.targetUser || !state.sourceUsers.length) {
+        alert('Preview a valid merge before continuing.');
+        return;
+    }
+
+    const sourceNames = state.sourceUsers.map(user => user.fullName).join(', ');
+    if (!confirm(`Merge quiz history from ${sourceNames} into ${state.targetUser.fullName}?\n\nThis will deactivate the source users.`))
+        return;
+
+    state.isExecuteLoading = true;
+    renderBulkMergeModal();
+
+    const body = {
+        sourceUserIds: state.sourceUsers.map(user => user.userId),
+        targetUserId: state.targetUser.userId
+    };
+
+    const resp = await fetch('/admin/users/merge/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body: JSON.stringify(body)
+    });
+
+    state.isExecuteLoading = false;
+    if (!resp.ok) {
+        renderBulkMergeModal();
+        alert(await responseErrorMessage(resp, 'Failed to merge users.'));
+        return;
+    }
+
+    const result = await resp.json();
+    alert(`Merge complete. ${result.quizAttemptsMoved} quiz attempts moved from ${result.sourceUserCount} source user(s).`);
+    closeModal();
+    location.reload();
+}
+
+function openEditRoleModalFromButton(button) {
+    openEditRoleModal(
+        button.dataset.userId,
+        button.dataset.roleCode,
+        button.dataset.fullName,
+        button.dataset.email,
+        button.dataset.company,
+        button.dataset.portfolio
+    );
+}
+
+async function openEditRoleModal(userId, currentRole, fullName, email, company, portfolio) {
+    const [accessResp, groupAssignmentsResp, groupOptionsResp] = await Promise.all([
+        fetch(`/admin/users/${userId}/access`, { headers: { Accept: 'application/json' } }),
+        fetch(`/admin/users/${userId}/groups`, { headers: { Accept: 'application/json' } }),
+        fetch('/admin/groups?includeInactive=false', { headers: { Accept: 'application/json' } })
+    ]);
+    if (!accessResp.ok || !groupAssignmentsResp.ok || !groupOptionsResp.ok) {
+        alert(await responseErrorMessage(accessResp.ok ? (groupAssignmentsResp.ok ? groupOptionsResp : groupAssignmentsResp) : accessResp, 'Failed to load user access.'));
+        return;
+    }
+    const access = await accessResp.json();
+    const assignedGroups = await groupAssignmentsResp.json();
+    window._accessGroupOptions = await groupOptionsResp.json();
+    window._accessEditor = {
+        userId,
+        orgs: [...(access.assignedOrganizations ?? [])],
+        portfolios: [...(access.assignedPortfolios ?? [])],
+        groups: [...(assignedGroups ?? [])]
+    };
+
+    const roles = [
+        ['Learner', 'Access to own dashboard and quizzes only.'],
+        ['ReportingAdmin', 'Reporting access scoped by assigned access groups.'],
+        ['GlobalAdmin', 'Full platform access. Manages roles, course content, and user access.']
+    ];
+    const selectedRole = normalizeRoleForEditor(access.roleCode || currentRole);
+    openModal(`
+        <div class="access-edit-modal">
+            <div class="access-edit-header">
+                <div>
+                    <h3 class="access-edit-title">Edit role</h3>
+                    <div class="access-edit-subtitle">Roles are managed in this platform only. Changes take effect immediately and persist across sign-ins.</div>
+                    <div class="access-edit-note" style="margin-top:6px;font-size:12px;color:#7a5a00">
+                        Reporting Admin access is controlled by assigned groups. Saving a legacy Org Admin or Portfolio Admin as Reporting Admin moves the user to the combined role.
+                    </div>
+                </div>
+                <button type="button" class="modal-close-btn" onclick="closeModal()" aria-label="Close dialog">×</button>
+            </div>
+            <div class="access-user-card">
+                <div class="access-user-avatar">${userInitials(fullName)}</div>
+                <div class="access-user-meta">
+                    <div class="access-user-name">${escHtml(fullName || 'Unknown User')}</div>
+                    <div class="access-user-line">${escHtml(email || '')}${email && company ? ' · ' : ''}${escHtml(company || '')}${(email || company) && portfolio ? ' · ' : ''}${escHtml(portfolio || '')}</div>
+                </div>
+            </div>
+            <div class="access-section-label">Assign role</div>
+            <div class="access-role-list">
+            ${roles.map(([r, d]) => `
+                <label class="role-choice ${r === selectedRole ? 'is-selected' : ''}">
+                    <input type="radio" name="new-role" value="${r}" ${r === selectedRole ? 'checked' : ''} onchange="renderAccessScopePanel()">
+                    <div class="role-choice-copy">
+                        <div class="role-choice-title">${roleLabel(r)}</div>
+                        <div class="role-choice-desc">${d}</div>
+                    </div>
+                </label>`).join('')}
+            </div>
+            <div id="access-scope-panel" class="access-scope-panel"></div>
+            <div class="access-edit-footer">
+                <button class="bex" onclick="closeModal()">Cancel</button>
+                <button class="bec" onclick="saveRole('${userId}')">Save role</button>
+            </div>
+        </div>`);
+    renderAccessScopePanel();
+}
+
+async function saveRole(userId) {
+    const selected = document.querySelector('input[name="new-role"]:checked');
+    if (!selected) return;
+    const state = window._accessEditor ?? { orgs: [], portfolios: [], groups: [] };
+    const orgIds = selected.value === 'OrgAdmin' ? (state.orgs ?? []) : [];
+    const portfolioIds = selected.value === 'PortfolioAdmin' ? (state.portfolios ?? []) : [];
+    const groupIds = selected.value === 'ReportingAdmin' ? (state.groups ?? []) : [];
+    const body = {
+        roleCode: selected.value,
+        organizationIds: orgIds.map(o => o.id),
+        portfolioIds: portfolioIds.map(p => p.id)
+    };
+    const resp = await fetch(`/admin/users/${userId}/access`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+        const e = await resp.json();
+        alert(e.error || 'Failed to update role.');
+        return;
+    }
+
+    const groupResp = await fetch(`/admin/users/${userId}/groups`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body: JSON.stringify({ accessGroupIds: groupIds.map(g => g.accessGroupId) })
+    });
+    if (groupResp.ok) { closeModal(); location.reload(); }
+    else { alert(await responseErrorMessage(groupResp, 'Role was saved, but group assignments could not be updated.')); }
+}
+
+function renderAccessScopePanel() {
+    const selected = document.querySelector('input[name="new-role"]:checked')?.value ?? 'Learner';
+    const state = window._accessEditor ?? { orgs: [], portfolios: [] };
+    document.querySelectorAll('.role-choice').forEach(label => {
+        const input = label.querySelector('input[name="new-role"]');
+        label.classList.toggle('is-selected', !!input?.checked);
+    });
+
+    const panel = document.getElementById('access-scope-panel');
+    if (!panel) return;
+
+    if (selected === 'OrgAdmin') {
+        state.portfolios = [];
+        window._accessEditor = state;
+        panel.innerHTML = accessPickerHtml(
+            'VBU access',
+            'Type a VBU name or ID...',
+            'org',
+            state.orgs ?? []
+        );
+        return;
+    }
+
+    if (selected === 'ReportingAdmin') {
+        state.orgs = [];
+        state.portfolios = [];
+        window._accessEditor = state;
+        panel.innerHTML = accessGroupPickerHtml(state.groups ?? []);
+        return;
+    }
+
+    state.orgs = [];
+    state.portfolios = [];
+    state.groups = [];
+    window._accessEditor = state;
+    panel.innerHTML = '';
+}
+
+function accessPickerHtml(title, placeholder, type, selectedItems) {
+    return `
+        <div class="access-picker">
+            <div class="access-picker-title">${title}</div>
+            <div class="access-picker-helper">This user can view reporting for the ${type === 'org' ? 'VBUs' : 'portfolios'} listed below. Add or remove as needed.</div>
+            <div id="${type}-selected" class="access-chip-row">
+                ${selectedItems.map(item => accessTagHtml(type, item)).join('')}
+            </div>
+            <div class="access-picker-row">
+                <div class="access-picker-input-wrap">
+                <input class="fi" id="${type}-search" type="text" placeholder="${placeholder}" style="width:100%"
+                       oninput="searchAccessOptions('${type}')">
+                    <div id="${type}-results" class="access-results"></div>
+                </div>
+                <button type="button" class="rbtn access-add-btn" onclick="addHighlightedAccessItem('${type}')">+ Add</button>
+            </div>
+        </div>`;
+}
+
+function accessGroupPickerHtml(selectedItems) {
+    return `
+        <div class="access-picker" style="margin-top:14px">
+            <div class="access-picker-title">Group access</div>
+            <div class="access-picker-helper">Phase 2 stores reusable portfolio group assignments. Reporting scope still follows the legacy portfolio assignment until the reporting cutover phase.</div>
+            <div id="group-selected" class="access-chip-row">
+                ${selectedItems.map(item => accessGroupTagHtml(item)).join('')}
+            </div>
+            <div class="access-picker-row">
+                <div class="access-picker-input-wrap">
+                <input class="fi" id="group-search" type="text" placeholder="Type a group name..."
+                       style="width:100%" oninput="searchGroupOptions()">
+                    <div id="group-results" class="access-results"></div>
+                </div>
+                <button type="button" class="rbtn access-add-btn" onclick="addHighlightedGroupItem()">+ Add</button>
+            </div>
+        </div>`;
+}
+
+function accessTagHtml(type, item) {
+    return `
+        <span class="tag tc" data-id="${item.id}" style="display:inline-flex;align-items:center;gap:6px">
+            ${escHtml(item.name)}
+            <button type="button" class="access-chip-remove" onclick="removeAccessItem('${type}', ${item.id})"
+                    style="border:0;background:transparent;color:inherit;cursor:pointer;font-weight:700;line-height:1">x</button>
+        </span>`;
+}
+
+function accessGroupTagHtml(item) {
+    return `
+        <span class="tag te" data-id="${item.accessGroupId}" style="display:inline-flex;align-items:center;gap:6px">
+            ${escHtml(item.name)} (${Number(item.effectiveOrganizationCount ?? 0)} orgs)
+            <button type="button" class="access-chip-remove" onclick="removeGroupAssignment('${escAttr(item.accessGroupId)}')"
+                    style="border:0;background:transparent;color:inherit;cursor:pointer;font-weight:700;line-height:1">x</button>
+        </span>`;
+}
+
+function removeAccessItem(type, id) {
+    const key = type === 'org' ? 'orgs' : 'portfolios';
+    window._accessEditor[key] = (window._accessEditor[key] ?? []).filter(item => item.id !== id);
+    renderAccessScopePanel();
+}
+
+function removeGroupAssignment(accessGroupId) {
+    window._accessEditor.groups = (window._accessEditor.groups ?? []).filter(item => item.accessGroupId !== accessGroupId);
+    renderAccessScopePanel();
+}
+
+function searchAccessOptions(type) {
+    const input = document.getElementById(`${type}-search`);
+    const results = document.getElementById(`${type}-results`);
+    const term = input?.value.trim() ?? '';
+    clearTimeout(window[`_${type}LookupTimer`]);
+    if (!term) {
+        if (results) results.style.display = 'none';
+        return;
+    }
+
+    window[`_${type}LookupTimer`] = setTimeout(async () => {
+        const endpoint = type === 'org' ? 'organizations' : 'portfolios';
+        const resp = await fetch(`/admin/lookups/${endpoint}?term=${encodeURIComponent(term)}`, { headers: { Accept: 'application/json' } });
+        if (!resp.ok || !results) return;
+        const options = await resp.json();
+        const key = type === 'org' ? 'orgs' : 'portfolios';
+        const selectedIds = new Set((window._accessEditor[key] ?? []).map(item => item.id));
+        const available = options.filter(item => !selectedIds.has(item.id));
+        window._accessLookup = window._accessLookup ?? {};
+        window._accessLookup[type] = available;
+        results.innerHTML = available.length
+            ? available.map(item => `<button type="button" class="access-result" data-type="${type}" data-id="${item.id}" data-name="${escAttr(item.name)}" onclick="addAccessItemFromButton(this)" style="display:block;width:100%;text-align:left;padding:9px 10px;border:0;background:#fff;cursor:pointer;font-size:13px">${escHtml(item.name)}</button>`).join('')
+            : '<div style="padding:10px;font-size:13px;color:#888">No matches</div>';
+        results.style.display = 'block';
+    }, 250);
+}
+
+function searchGroupOptions() {
+    const input = document.getElementById('group-search');
+    const results = document.getElementById('group-results');
+    const term = input?.value.trim().toLowerCase() ?? '';
+    clearTimeout(window._groupLookupTimer);
+    if (!term) {
+        if (results) results.style.display = 'none';
+        return;
+    }
+
+    window._groupLookupTimer = setTimeout(() => {
+        if (!results) return;
+        const selectedIds = new Set((window._accessEditor.groups ?? []).map(item => item.accessGroupId));
+        const options = (window._accessGroupOptions ?? ACCESS_GROUP_OPTIONS ?? [])
+            .filter(item => item.isActive)
+            .filter(item => !selectedIds.has(item.accessGroupId))
+            .filter(item =>
+                String(item.name ?? '').toLowerCase().includes(term) ||
+                String(item.organizationId ?? '').includes(term) ||
+                String(item.portfolioId ?? '').includes(term));
+        window._accessLookup = window._accessLookup ?? {};
+        window._accessLookup.group = options;
+        results.innerHTML = options.length
+            ? options.map(item => `<button type="button" class="access-result" data-group-id="${escAttr(item.accessGroupId)}" data-name="${escAttr(item.name)}" data-type-code="${escAttr(item.groupTypeCode)}" data-count="${Number(item.effectiveOrganizationCount ?? 0)}" onclick="addGroupItemFromButton(this)" style="display:block;width:100%;text-align:left;padding:9px 10px;border:0;background:#fff;cursor:pointer;font-size:13px">${escHtml(item.name)} <span style="color:#888">(${Number(item.effectiveOrganizationCount ?? 0)} orgs)</span></button>`).join('')
+            : '<div style="padding:10px;font-size:13px;color:#888">No matches</div>';
+        results.style.display = 'block';
+    }, 250);
+}
+
+function addHighlightedAccessItem(type) {
+    const input = document.getElementById(`${type}-search`);
+    const query = input?.value.trim().toLowerCase() ?? '';
+    const results = (window._accessLookup?.[type] ?? []);
+    if (!results.length) return;
+
+    const exact = results.find(item => String(item.name).toLowerCase() === query);
+    addAccessItem(type, Number((exact ?? results[0]).id), (exact ?? results[0]).name);
+}
+
+function addHighlightedGroupItem() {
+    const input = document.getElementById('group-search');
+    const query = input?.value.trim().toLowerCase() ?? '';
+    const results = (window._accessLookup?.group ?? []);
+    if (!results.length) return;
+
+    const exact = results.find(item => String(item.name).toLowerCase() === query);
+    addGroupAssignment(exact ?? results[0]);
+}
+
+function userInitials(fullName) {
+    const parts = String(fullName || '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '??';
+    return parts.slice(0, 2).map(p => p[0]?.toUpperCase() ?? '').join('') || '??';
+}
+
+function roleLabel(role) {
+    switch (role) {
+        case 'ReportingAdmin': return 'Reporting admin';
+        case 'OrgAdmin': return 'Reporting admin';
+        case 'PortfolioAdmin': return 'Reporting admin';
+        case 'GlobalAdmin': return 'Global admin';
+        default: return 'Learner';
+    }
+}
+
+function normalizeRoleForEditor(role) {
+    return role === 'OrgAdmin' || role === 'PortfolioAdmin' ? 'ReportingAdmin' : (role || 'Learner');
+}
+
+function addAccessItemFromButton(button) {
+    addAccessItem(button.dataset.type, Number(button.dataset.id), button.dataset.name);
+}
+
+function addGroupItemFromButton(button) {
+    addGroupAssignment({
+        accessGroupId: button.dataset.groupId,
+        name: button.dataset.name,
+        groupTypeCode: button.dataset.typeCode,
+        effectiveOrganizationCount: Number(button.dataset.count ?? 0),
+        isActive: true
+    });
+}
+
+function addAccessItem(type, id, name) {
+    const key = type === 'org' ? 'orgs' : 'portfolios';
+    const items = window._accessEditor[key] ?? [];
+    if (!items.some(item => item.id === id)) {
+        items.push({ id, name });
+        window._accessEditor[key] = items;
+    }
+    renderAccessScopePanel();
+}
+
+function addGroupAssignment(item) {
+    const groups = window._accessEditor.groups ?? [];
+    if (!groups.some(group => group.accessGroupId === item.accessGroupId)) {
+        groups.push({
+            accessGroupId: item.accessGroupId,
+            name: item.name,
+            groupTypeCode: item.groupTypeCode,
+            effectiveOrganizationCount: item.effectiveOrganizationCount ?? 0,
+            isActive: item.isActive ?? true
+        });
+        window._accessEditor.groups = groups;
+    }
+    renderAccessScopePanel();
+}
+
+async function setUserStatus(userId, isActive) {
+    const shouldActivate = isActive === true || isActive === 'true';
+    const action = shouldActivate ? 'Restore' : 'Remove';
+    if (!confirm(`${action} this user?`)) return;
+    const resp = await fetch(`/admin/users/${userId}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body: JSON.stringify({ isActive: shouldActivate })
+    });
+    if (resp.ok) location.reload();
+    else alert('Failed to update user status.');
+}
+
+function openGroupDetailFromButton(button) {
+    openGroupDetail(button.dataset.groupId);
+}
+
+async function openGroupDetail(accessGroupId) {
+    const resp = await fetch(`/admin/groups/detail/${accessGroupId}`, { headers: { Accept: 'application/json' } });
+    if (!resp.ok) {
+        alert(await responseErrorMessage(resp, 'Failed to load group detail.'));
+        return;
+    }
+
+    const group = await resp.json();
+    const orgs = group.effectiveOrganizations ?? [];
+    window._groupUserState = { accessGroupId, users: [], candidates: [] };
+    openModal(`
+        <div class="access-edit-modal">
+            <div class="access-edit-header">
+                <div>
+                    <h3 class="access-edit-title">${escHtml(group.name)}</h3>
+                    <div class="access-edit-subtitle">${escHtml(group.groupTypeName)} · ${group.isSystemManaged ? 'System managed' : 'Custom'} · ${group.isActive ? 'Active' : 'Inactive'}</div>
+                </div>
+                <button type="button" class="modal-close-btn" onclick="closeModal()" aria-label="Close dialog">×</button>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(3,minmax(130px,1fr));gap:10px;margin-bottom:14px">
+                <div style="background:#fafafa;border:1px solid #eee;border-radius:8px;padding:10px">
+                    <div style="font-size:11px;color:#888">Effective organizations</div>
+                    <div style="font-size:20px;font-weight:800">${orgs.length}</div>
+                </div>
+                <div style="background:#fafafa;border:1px solid #eee;border-radius:8px;padding:10px">
+                    <div style="font-size:11px;color:#888">Assigned users</div>
+                    <div id="group-assigned-user-count" style="font-size:20px;font-weight:800">${Number(group.assignedUserCount ?? 0)}</div>
+                </div>
+                <div style="background:#fafafa;border:1px solid #eee;border-radius:8px;padding:10px">
+                    <div style="font-size:11px;color:#888">Parent portfolio</div>
+                    <div style="font-size:13px;font-weight:700">${escHtml(group.parentPortfolioName ?? group.portfolioId ?? '-')}</div>
+                </div>
+            </div>
+            <div style="font-weight:700;margin-bottom:8px">Assigned users</div>
+            <div style="border:1px solid #eee;border-radius:8px;padding:12px;margin-bottom:14px">
+                <div class="access-picker-row" style="margin-bottom:10px">
+                    <div class="access-picker-input-wrap">
+                        <input class="fi" id="group-user-search" type="text" placeholder="Search users by name or email..."
+                               style="width:100%" oninput="searchGroupUserCandidates('${escAttr(group.accessGroupId)}')">
+                        <div id="group-user-results" class="access-results"></div>
+                    </div>
+                    <button type="button" class="rbtn access-add-btn" onclick="addHighlightedGroupUser('${escAttr(group.accessGroupId)}')">+ Add</button>
+                </div>
+                <div id="group-users-list" style="min-height:44px;color:#888;font-size:13px">Loading assigned users...</div>
+            </div>
+            <div style="font-weight:700;margin-bottom:8px">Effective organization preview</div>
+            <div style="border:1px solid #eee;border-radius:8px;max-height:280px;overflow:auto">
+                ${orgs.length ? `
+                    <table class="dt" style="margin:0">
+                        <thead><tr><th>Organization</th><th>ID</th><th>Reports to</th></tr></thead>
+                        <tbody>
+                        ${orgs.slice(0, 75).map(org => `
+                            <tr>
+                                <td>${escHtml(org.organizationName)}</td>
+                                <td>${Number(org.organizationId)}</td>
+                                <td>${escHtml(org.reportToName || '-')}</td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    ${orgs.length > 75 ? `<div style="padding:10px;font-size:12px;color:#888">Showing first 75 of ${orgs.length} organizations.</div>` : ''}
+                ` : '<div style="padding:14px;color:#888">No effective organizations were found for this group.</div>'}
+            </div>
+            <div class="access-edit-footer">
+                <button class="bex" onclick="closeModal()">Close</button>
+                <button class="bec" onclick="setGroupStatus('${escAttr(group.accessGroupId)}', ${!group.isActive})">${group.isActive ? 'Deactivate group' : 'Activate group'}</button>
+            </div>
+        </div>`);
+    loadGroupUsers(accessGroupId);
+}
+
+async function loadGroupUsers(accessGroupId) {
+    const list = document.getElementById('group-users-list');
+    if (list) list.innerHTML = '<div style="padding:10px;color:#888">Loading assigned users...</div>';
+
+    const resp = await fetch(`/admin/groups/${accessGroupId}/users`, { headers: { Accept: 'application/json' } });
+    if (!resp.ok) {
+        if (list) list.innerHTML = `<div style="padding:10px;color:#A32D2D">${escHtml(await responseErrorMessage(resp, 'Failed to load assigned users.'))}</div>`;
+        return;
+    }
+
+    const users = await resp.json();
+    window._groupUserState = window._groupUserState ?? { accessGroupId, users: [], candidates: [] };
+    window._groupUserState.users = users ?? [];
+    renderGroupUsers(accessGroupId, window._groupUserState.users);
+}
+
+function renderGroupUsers(accessGroupId, users) {
+    const list = document.getElementById('group-users-list');
+    const count = document.getElementById('group-assigned-user-count');
+    if (count) count.textContent = String(users.length);
+    if (!list) return;
+
+    if (!users.length) {
+        list.innerHTML = '<div style="padding:10px;color:#888">No users are assigned to this group yet.</div>';
+        return;
+    }
+
+    list.innerHTML = `
+        <div style="display:grid;gap:8px">
+            ${users.map(user => `
+                <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;border:1px solid #eee;border-radius:8px;padding:9px 10px;background:#fff">
+                    <div>
+                        <div style="font-weight:700;color:#333">${escHtml(user.fullName || 'Unknown user')}</div>
+                        <div style="font-size:12px;color:#888">${escHtml(user.email || '')} - ${escHtml(user.roleName || user.roleCode || '')}</div>
+                    </div>
+                    <button class="rbtn danger" onclick="removeGroupUser('${escAttr(accessGroupId)}', '${escAttr(user.userId)}')">Remove</button>
+                </div>`).join('')}
+        </div>`;
+}
+
+function searchGroupUserCandidates(accessGroupId) {
+    const input = document.getElementById('group-user-search');
+    const results = document.getElementById('group-user-results');
+    const term = input?.value.trim() ?? '';
+    clearTimeout(window._groupUserLookupTimer);
+    if (!term) {
+        if (results) results.style.display = 'none';
+        return;
+    }
+
+    window._groupUserLookupTimer = setTimeout(async () => {
+        const resp = await fetch(`/admin/groups/user-candidates?term=${encodeURIComponent(term)}`, { headers: { Accept: 'application/json' } });
+        if (!resp.ok || !results) return;
+
+        const assignedIds = new Set((window._groupUserState?.users ?? []).map(user => String(user.userId).toLowerCase()));
+        const candidates = (await resp.json())
+            .filter(user => !assignedIds.has(String(user.userId).toLowerCase()));
+
+        window._groupUserState = window._groupUserState ?? { accessGroupId, users: [], candidates: [] };
+        window._groupUserState.candidates = candidates;
+        results.innerHTML = candidates.length
+            ? candidates.map(user => `
+                <button type="button" class="access-result" data-user-id="${escAttr(user.userId)}" onclick="addGroupUserFromButton('${escAttr(accessGroupId)}', this)"
+                        style="display:block;width:100%;text-align:left;padding:9px 10px;border:0;background:#fff;cursor:pointer;font-size:13px">
+                    <strong>${escHtml(user.fullName || 'Unknown user')}</strong>
+                    <span style="color:#888"> ${escHtml(user.email || '')}</span>
+                </button>`).join('')
+            : '<div style="padding:10px;font-size:13px;color:#888">No matching users</div>';
+        results.style.display = 'block';
+    }, 250);
+}
+
+function addHighlightedGroupUser(accessGroupId) {
+    const candidates = window._groupUserState?.candidates ?? [];
+    if (!candidates.length) return;
+    addGroupUser(accessGroupId, candidates[0].userId);
+}
+
+function addGroupUserFromButton(accessGroupId, button) {
+    addGroupUser(accessGroupId, button.dataset.userId);
+}
+
+async function addGroupUser(accessGroupId, userId) {
+    if (!userId) return;
+    const resp = await fetch(`/admin/groups/${accessGroupId}/users/${userId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN }
+    });
+    if (!resp.ok) {
+        alert(await responseErrorMessage(resp, 'Failed to add user to group.'));
+        return;
+    }
+
+    const users = await resp.json();
+    const results = document.getElementById('group-user-results');
+    const search = document.getElementById('group-user-search');
+    if (results) results.style.display = 'none';
+    if (search) search.value = '';
+    window._groupUserState.users = users ?? [];
+    window._groupUserState.candidates = [];
+    renderGroupUsers(accessGroupId, window._groupUserState.users);
+}
+
+async function removeGroupUser(accessGroupId, userId) {
+    if (!confirm('Remove this user from the group?')) return;
+    const resp = await fetch(`/admin/groups/${accessGroupId}/users/${userId}`, {
+        method: 'DELETE',
+        headers: { 'RequestVerificationToken': TOKEN }
+    });
+    if (!resp.ok) {
+        alert(await responseErrorMessage(resp, 'Failed to remove user from group.'));
+        return;
+    }
+
+    const users = await resp.json();
+    window._groupUserState.users = users ?? [];
+    renderGroupUsers(accessGroupId, window._groupUserState.users);
+}
+
+async function setGroupStatus(accessGroupId, isActive) {
+    const action = isActive ? 'activate' : 'deactivate';
+    if (!confirm(`Are you sure you want to ${action} this group?`)) return;
+    const resp = await fetch(`/admin/groups/${accessGroupId}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN },
+        body: JSON.stringify({ isActive })
+    });
+    if (resp.ok) location.reload();
+    else alert(await responseErrorMessage(resp, 'Failed to update group status.'));
+}
+
+async function reseedGroups() {
+    if (!confirm('Reseed system-managed portfolio groups and sub-groups from the current portfolio and VBU master data?')) return;
+    const resp = await fetch('/admin/groups/reseed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': TOKEN }
+    });
+    if (!resp.ok) {
+        alert(await responseErrorMessage(resp, 'Failed to reseed groups.'));
+        return;
+    }
+
+    const result = await resp.json();
+    alert(`Created ${result.portfolioGroupsCreated ?? 0} portfolio groups and ${result.portfolioSubGroupsCreated ?? 0} portfolio sub-groups.`);
+    location.reload();
+}
+
+function searchGroups() {
+    const q = document.getElementById('groups-search')?.value ?? '';
+    const organizationSearch = document.getElementById('groups-org-search')?.value ?? '';
+    const type = document.getElementById('groups-type')?.value ?? '';
+    const includeInactive = document.getElementById('groups-include-inactive')?.checked ?? true;
+    clearTimeout(window._grpTimer);
+    window._grpTimer = setTimeout(() => {
+        setAdminFilterLoading(true);
+        const params = new URLSearchParams();
+        if (q) params.set('search', q);
+        if (organizationSearch) params.set('organizationSearch', organizationSearch);
+        if (type) params.set('type', type);
+        params.set('includeInactive', includeInactive ? 'true' : 'false');
+        window.location.href = `/admin/groups?${params}`;
+    }, 400);
+}
+
+function toggleGroupsSearchClear() {
+    const search = document.getElementById('groups-search');
+    const clear = document.getElementById('groups-search-clear');
+    if (!search || !clear) return;
+    clear.hidden = !search.value;
+}
+
+function clearGroupsSearch() {
+    const search = document.getElementById('groups-search');
+    if (!search) return;
+    search.value = '';
+    toggleGroupsSearchClear();
+    searchGroups();
+    search.focus();
+}
+
+function toggleGroupsOrgSearchClear() {
+    const search = document.getElementById('groups-org-search');
+    const clear = document.getElementById('groups-org-search-clear');
+    if (!search || !clear) return;
+    clear.hidden = !search.value;
+}
+
+function clearGroupsOrgSearch() {
+    const search = document.getElementById('groups-org-search');
+    if (!search) return;
+    search.value = '';
+    toggleGroupsOrgSearchClear();
+    searchGroups();
+    search.focus();
+}
+
+function searchUsers() {
+    const q = document.getElementById('users-search')?.value ?? '';
+    clearTimeout(window._usrTimer);
+    window._usrTimer = setTimeout(() => {
+        setAdminFilterLoading(true);
+        window.location.href = `/admin/users?search=${encodeURIComponent(q)}`;
+    }, 400);
+}
+
+function toggleUsersSearchClear() {
+    const search = document.getElementById('users-search');
+    const clear = document.getElementById('users-search-clear');
+    if (!search || !clear) return;
+    clear.hidden = !search.value;
+}
+
+function clearUsersSearch() {
+    const search = document.getElementById('users-search');
+    if (!search) return;
+    search.value = '';
+    toggleUsersSearchClear();
+    searchUsers();
+    search.focus();
+}
+
+function searchQuestions() {
+    const search = document.getElementById('q-search')?.value ?? '';
+    const quizId = document.getElementById('q-quiz-filter')?.value ?? '';
+    const lang = document.getElementById('q-lang')?.value ?? '';
+    clearTimeout(window._qTimer);
+    window._qTimer = setTimeout(() => {
+        setAdminFilterLoading(true);
+        const params = new URLSearchParams();
+        if (lang) params.set('lang', lang);
+        if (search) params.set('search', search);
+        if (quizId) params.set('quizId', quizId);
+        window.location.href = `/admin/cms/questions?${params}`;
+    }, 400);
+}
+
+function setAdminFilterLoading(isLoading, text = 'Updating results...') {
+    const loader = document.getElementById('admin-filter-loading');
+    const textEl = document.querySelector('#admin-filter-loading .filter-loading-text');
+    if (loader) loader.hidden = !isLoading;
+    if (textEl) textEl.textContent = text;
+}
+
+function escHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function escAttr(s) {
+    return escHtml(s);
+}
+
+async function responseErrorMessage(resp, fallback) {
+    const text = await resp.text();
+    if (!text) return `${fallback} (HTTP ${resp.status}${resp.statusText ? ` ${resp.statusText}` : ''})`;
+
+    try {
+        const json = JSON.parse(text);
+        if (json.error) return json.error;
+        const messages = Object.values(json)
+            .flatMap(value => Array.isArray(value) ? value : [value])
+            .filter(Boolean);
+        return messages.length ? messages.join('\n') : fallback;
+    } catch {
+        return text;
+    }
+}
+
+toggleUsersSearchClear();
+toggleGroupsSearchClear();
+toggleGroupsOrgSearchClear();
+resetImpersonationSelection();
+updateImpersonationButtonState();
+</script>
+}
